@@ -1,0 +1,28 @@
+# Connecteur Vertuoz — à lancer sur une machine du réseau de la chaudière
+# (NAS, Raspberry Pi, PC toujours allumé…)
+#
+#   1. Renseigner les trois valeurs ci-dessous
+#   2. docker compose up -d
+#   3. docker compose logs -f   (vérifier « Appairé à l'installation … »)
+#
+# Après l'appairage, VERTUOZ_PAIRING_CODE peut être retiré : le jeton est conservé dans le volume.
+services:
+  vertuoz-agent:
+    build: .
+    image: vertuoz-agent:1.0.0
+    restart: unless-stopped
+    environment:
+      VERTUOZ_SERVER: "https://app.vertuoz.fr"   # adresse de Vertuoz
+      BOILER_URL: "http://192.168.1.20"          # adresse de la chaudière sur le réseau local
+      VERTUOZ_PAIRING_CODE: "XXXX-XXXX"          # code affiché par Vertuoz
+      AGENT_NAME: "NAS salon"                   # nom affiché dans Vertuoz (facultatif)
+      TZ: "Europe/Paris"
+    volumes:
+      - vertuoz-agent-data:/data
+    # Pour joindre un service du poste lui-même (Vertuoz ou chaudière virtuelle en local),
+    # utiliser l'adresse host.docker.internal :
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  vertuoz-agent-data:
