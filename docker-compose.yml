@@ -8,8 +8,9 @@
 # Après l'appairage, VERTUOZ_PAIRING_CODE peut être retiré : le jeton est conservé dans le volume.
 services:
   vertuoz-agent:
-    build: .
-    image: vertuoz-agent:1.0.0
+    image: ghcr.io/domotrique/vertuoz-agent:1
+    # Pour construire l'image à partir de ce dossier plutôt que la télécharger :
+    # build: .
     restart: unless-stopped
     environment:
       VERTUOZ_SERVER: "https://app.vertuoz.fr"   # adresse de Vertuoz

@@ -15,26 +15,30 @@ code `XXXX-XXXX`, valable 24 heures et à usage unique, ainsi que les commandes 
 
 ## 2. Lancer le connecteur
 
-### Avec Docker
+Le client n'a **pas besoin du code source** : il utilise l'image Docker publiée ou télécharge le fichier
+du connecteur depuis Vertuoz.
+
+### Avec Docker (recommandé : redémarre tout seul)
 
 ```sh
-docker build -t vertuoz-agent .
 docker run -d --name vertuoz-agent --restart unless-stopped \
   -e VERTUOZ_SERVER=https://app.vertuoz.fr \
   -e BOILER_URL=http://192.168.1.20 \
   -e VERTUOZ_PAIRING_CODE=XXXX-XXXX \
   -v vertuoz-agent-data:/data \
-  vertuoz-agent
+  ghcr.io/domotrique/vertuoz-agent:1
 docker logs -f vertuoz-agent
 ```
 
 Ou avec Docker Compose : renseigner `docker-compose.yml`, puis `docker compose up -d`.
+L'image existe pour PC/NAS (amd64) et Raspberry Pi (arm64, armv7).
 
 ### Sans Docker (Node.js 18+)
 
 PowerShell :
 
 ```powershell
+Invoke-WebRequest -Uri https://app.vertuoz.fr/telechargements/vertuoz-agent.mjs -OutFile vertuoz-agent.mjs
 $env:VERTUOZ_SERVER="https://app.vertuoz.fr"
 $env:BOILER_URL="http://192.168.1.20"
 $env:VERTUOZ_PAIRING_CODE="XXXX-XXXX"
@@ -44,11 +48,28 @@ node vertuoz-agent.mjs
 Linux / macOS :
 
 ```sh
+curl -fsSLO https://app.vertuoz.fr/telechargements/vertuoz-agent.mjs
 VERTUOZ_SERVER=https://app.vertuoz.fr BOILER_URL=http://192.168.1.20 VERTUOZ_PAIRING_CODE=XXXX-XXXX node vertuoz-agent.mjs
 ```
 
+Sans Docker, le connecteur s'arrête avec la fenêtre : pour un fonctionnement permanent, utiliser Docker ou
+un service (tâche planifiée Windows « au démarrage », service systemd sous Linux).
+
 Le journal doit afficher `Appairé à l'installation « … »` puis `Cycle terminé : …`. Le jeton est enregistré
 dans `data/agent.json` (ou le volume `/data` avec Docker) : aux démarrages suivants, le code n'est plus utile.
+
+## Publier l'image (exploitant de Vertuoz)
+
+L'image est construite et publiée par le workflow GitHub `.github/workflows/agent-image.yml` :
+
+```sh
+git tag agent-v1.0.0
+git push origin agent-v1.0.0
+```
+
+Elle apparaît dans l'onglet *Packages* du dépôt : la passer en **public** (Package settings → Change
+visibility) pour que les clients puissent la télécharger sans compte GitHub. Pour utiliser un autre
+registre, renseigner `NEXT_PUBLIC_AGENT_IMAGE` dans la configuration de Vertuoz.
 
 ## Variables
 
