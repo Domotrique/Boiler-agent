@@ -286,7 +286,7 @@ export async function runCycle(config, state) {
     }
   }
 
-  await serverRequest(config, "POST", "/api/agent/v1/heartbeat", {
+  const ack = await serverRequest(config, "POST", "/api/agent/v1/heartbeat", {
     token: state.token,
     json: {
       boilerReachable: true,
@@ -301,7 +301,24 @@ export async function runCycle(config, state) {
     },
   })
   log("info", `Cycle terminé : ${filesSent} journal(aux) envoyé(s), ${rowsInserted} nouvelle(s) mesure(s)`)
+  announceUpdate(ack?.latestVersion)
   return { intervalMinutes: remote.intervalMinutes, boilerReachable: true }
+}
+
+/** Comparaison de versions X.Y.Z : négatif si a < b */
+export function compareVersions(a, b) {
+  const parts = (v) => String(v).replace(/^v/, "").split(/[.-]/).slice(0, 3).map((n) => Number.parseInt(n, 10) || 0)
+  const [pa, pb] = [parts(a), parts(b)]
+  for (let i = 0; i < 3; i++) if (pa[i] !== pb[i]) return pa[i] - pb[i]
+  return 0
+}
+
+let announcedVersion = null
+/** Signale une seule fois par version qu'une mise à jour du connecteur est disponible */
+function announceUpdate(latest) {
+  if (typeof latest !== "string" || latest === announcedVersion || compareVersions(AGENT_VERSION, latest) >= 0) return
+  announcedVersion = latest
+  log("warn", `Nouvelle version du connecteur disponible : ${AGENT_VERSION} → ${latest} (voir la page de la chaudière dans Vertuoz)`)
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))

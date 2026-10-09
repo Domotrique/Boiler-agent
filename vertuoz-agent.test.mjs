@@ -68,3 +68,12 @@ describe("connecteur : veille après suppression ou dissociation", () => {
     expect(dormantAdvice("unpaired")).toContain("nouveau VERTUOZ_PAIRING_CODE")
   })
 })
+
+describe("versions", () => {
+  it("compare les versions du connecteur", async () => {
+    const { compareVersions } = await import("./vertuoz-agent.mjs")
+    expect(compareVersions("1.0.1", "1.0.2")).toBeLessThan(0)
+    expect(compareVersions("1.10.0", "1.9.9")).toBeGreaterThan(0)
+    expect(compareVersions("1.0.1", "v1.0.1")).toBe(0)
+  })
+})
