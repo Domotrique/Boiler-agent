@@ -28,7 +28,7 @@ import { hostname } from "node:os"
 import path from "node:path"
 import { pathToFileURL } from "node:url"
 
-export const AGENT_VERSION = "1.0.0"
+export const AGENT_VERSION = "1.0.1"
 
 const LOGFILES_PATH = "/logfiles/pelletronic"
 const BOILER_LISTING_TIMEOUT_MS = 10_000
@@ -279,8 +279,8 @@ export async function runCycle(config, state) {
       if (res.warnings?.length) problems.push(`${date} : ${res.warnings.join(" ; ")}`)
       log("debug", `${date} : ${res.inserted} mesure(s) ajoutée(s)`)
     } catch (error) {
-      // Jeton révoqué : inutile de continuer le cycle
-      if (error instanceof HttpError && error.status === 401) throw error
+      // Jeton inconnu ou révoqué : inutile de continuer le cycle
+      if (error instanceof HttpError && (error.status === 401 || error.status === 410)) throw error
       problems.push(`${date} : ${error.message}`)
       log("warn", `${date} : ${error.message}`)
     }
