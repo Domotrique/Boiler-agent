@@ -87,8 +87,8 @@ registre, renseigner `NEXT_PUBLIC_AGENT_IMAGE` dans la configuration de Vertuoz.
 
 - `node vertuoz-agent.mjs --once` : un seul cycle, pour tester.
 - `node vertuoz-agent.mjs --reset` : oublie le jeton (pour refaire l'appairage avec un nouveau code).
-- En cas d'échec de l'appairage (code erroné ou expiré, Vertuoz injoignable), le connecteur réessaie toutes les 5 minutes :
-  corriger `VERTUOZ_PAIRING_CODE` puis redémarrer le conteneur.
+- Code d'appairage refusé (erroné, expiré, déjà utilisé) : le connecteur se met en veille ; corriger
+  `VERTUOZ_PAIRING_CODE` puis le redémarrer. Si Vertuoz est injoignable, il réessaie toutes les 5 minutes.
 
 ## Tester avec la chaudière virtuelle
 
@@ -98,6 +98,25 @@ La chaudière virtuelle répond sur `http://localhost:8181` du poste.
 - Avec Docker Desktop : `BOILER_URL=http://host.docker.internal:8181` (et `VERTUOZ_SERVER=http://host.docker.internal:3000`
   si Vertuoz tourne aussi sur le poste).
 
+## Suppression de la chaudière et désinstallation
+
+Vertuoz ne peut pas désinstaller le connecteur à distance (il n'accepte aucune connexion entrante). Quand la
+chaudière est **supprimée** ou **désactivée** dans Vertuoz, ou le connecteur **dissocié**, le connecteur reçoit
+la raison au cycle suivant, oublie son jeton et **se met en veille** : il n'interroge plus Vertuoz et rappelle
+toutes les 6 heures dans son journal comment le désinstaller ou le réutiliser.
+
+Désinstaller :
+
+```sh
+docker rm -f vertuoz-agent && docker volume rm vertuoz-agent-data   # Docker
+docker compose down -v                                              # Docker Compose
+```
+
+Sans Docker : arrêter le programme, puis supprimer `vertuoz-agent.mjs` et le dossier `data`.
+
+Réutiliser le connecteur (autre chaudière, nouvel appairage) : renseigner un **nouveau** `VERTUOZ_PAIRING_CODE`
+et le redémarrer. Un code déjà utilisé ou refusé n'est jamais réessayé.
+
 ## Dépannage
 
 | Message | Cause probable |
@@ -105,4 +124,5 @@ La chaudière virtuelle répond sur `http://localhost:8181` du poste.
 | `Code d'appairage inconnu ou déjà utilisé` | Code déjà consommé : en générer un nouveau dans Vertuoz |
 | `Code d'appairage expiré` | Plus de 24 h : en générer un nouveau |
 | `Chaudière injoignable` | `BOILER_URL` incorrecte ou chaudière éteinte ; Vertuoz affiche l'installation « en erreur » |
-| `Vertuoz ne reconnaît plus ce connecteur` | Connecteur dissocié depuis Vertuoz : le jeton est oublié ; redémarrer avec un nouveau `VERTUOZ_PAIRING_CODE` |
+| `En veille : la chaudière … a été supprimée` | Chaudière supprimée ou désactivée dans Vertuoz : désinstaller le connecteur (voir plus haut) |
+| `En veille : ce connecteur a été dissocié…` | Redémarrer avec un nouveau `VERTUOZ_PAIRING_CODE` |

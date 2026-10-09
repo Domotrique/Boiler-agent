@@ -84,6 +84,30 @@ export function isComplete(progress, date) {
   return typeof last === "string" && last >= "23:59:00"
 }
 
+/** Code d'appairage comparable (majuscules, sans espace ni tiret) */
+export function canonicalCode(code) {
+  return String(code ?? "").toUpperCase().replace(/[\s-]/g, "")
+}
+
+/** Faut-il tenter un appairage ? Pas avec un code déjà consommé ou refusé (évite les essais sans fin) */
+export function shouldPair(pairingCode, dormant) {
+  if (!pairingCode) return false
+  return !dormant?.consumedCode || canonicalCode(pairingCode) !== canonicalCode(dormant.consumedCode)
+}
+
+/** Instructions affichées quand le connecteur n'a plus de chaudière à servir */
+export function dormantAdvice(reason) {
+  if (reason === "deleted" || reason === "deactivated") {
+    return (
+      "Ce connecteur n'a plus d'utilité : vous pouvez le désinstaller. " +
+      "Docker : docker rm -f vertuoz-agent && docker volume rm vertuoz-agent-data ; " +
+      "sans Docker : arrêtez le programme puis supprimez vertuoz-agent.mjs et le dossier data. " +
+      "Pour le réutiliser avec une autre chaudière, renseignez un nouveau VERTUOZ_PAIRING_CODE et redémarrez-le."
+    )
+  }
+  return "Pour le réutiliser, renseignez un nouveau VERTUOZ_PAIRING_CODE (affiché par Vertuoz) et redémarrez-le."
+}
+
 /** Jours à envoyer : ceux proposés par la chaudière et pas encore complets côté Vertuoz */
 export function daysToSend(boilerDates, progress) {
   return boilerDates.filter((d) => !isComplete(progress, d))
@@ -144,9 +168,10 @@ async function saveState(config, state) {
 // ---------------------------------------------------------------------------
 
 class HttpError extends Error {
-  constructor(status, message) {
+  constructor(status, message, reason) {
     super(message)
     this.status = status
+    this.reason = reason
   }
 }
 
@@ -189,7 +214,7 @@ async function serverRequest(config, method, pathname, { token, json, text } = {
     throw new HttpError(0, `Vertuoz injoignable (${describeFetchError(error, url, SERVER_TIMEOUT_MS)})`)
   }
   const payload = await res.json().catch(() => ({}))
-  if (!res.ok) throw new HttpError(res.status, payload.error ?? `Vertuoz a répondu ${res.status}`)
+  if (!res.ok) throw new HttpError(res.status, payload.error ?? `Vertuoz a répondu ${res.status}`, payload.reason)
   return payload
 }
 
@@ -208,7 +233,13 @@ async function pair(config) {
   const res = await serverRequest(config, "POST", "/api/agent/v1/pair", {
     json: { code: config.pairingCode, hostname: agentName(), version: AGENT_VERSION, boilerUrl: config.boilerUrl },
   })
-  const state = { server: config.server, token: res.token, installation: res.installation, pairedAt: new Date().toISOString() }
+  const state = {
+    server: config.server,
+    token: res.token,
+    installation: res.installation,
+    pairedAt: new Date().toISOString(),
+    pairingCode: canonicalCode(config.pairingCode),
+  }
   await saveState(config, state)
   log("info", `Appairé à l'installation « ${res.installation.name} ». Le code d'appairage n'est plus nécessaire.`)
   return state
@@ -275,16 +306,28 @@ export async function runCycle(config, state) {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const PAIRING_RETRY_MINUTES = 5
+const DORMANT_REMINDER_HOURS = 6
+
+/** Met le connecteur en veille : plus aucune requête vers Vertuoz tant qu'un nouveau code n'est pas fourni */
+async function goDormant(config, reason, message, consumedCode) {
+  const dormant = { reason, message, consumedCode: consumedCode ?? null, since: new Date().toISOString() }
+  await saveState(config, { server: config.server, dormant })
+  return { server: config.server, dormant }
+}
 
 /**
- * Appairage, réessayé toutes les 5 minutes en cas d'échec plutôt que de quitter :
- * sous Docker, un redémarrage en boucle épuiserait les tentatives autorisées.
+ * Appairage. Un code refusé (inconnu, déjà utilisé, expiré) n'est pas réessayé : le connecteur se met en
+ * veille. Seules les erreurs réseau sont réessayées, toutes les 5 minutes (sous Docker, quitter
+ * provoquerait des redémarrages en boucle).
  */
-async function pairWithRetry(config, once) {
+async function pairOrSleep(config, once) {
   for (;;) {
     try {
       return await pair(config)
     } catch (error) {
+      if (error instanceof HttpError && error.status >= 400 && error.status < 500 && error.status !== 429) {
+        return goDormant(config, "pairing-refused", error.message, config.pairingCode)
+      }
       if (once) throw error
       log("error", `${error.message} — nouvel essai dans ${PAIRING_RETRY_MINUTES} min`)
       await sleep(PAIRING_RETRY_MINUTES * 60_000)
@@ -294,6 +337,7 @@ async function pairWithRetry(config, once) {
 
 async function main(argv) {
   const config = readConfig()
+  const once = argv.includes("--once")
 
   if (argv.includes("--reset")) {
     await rm(stateFile(config), { force: true })
@@ -308,26 +352,42 @@ async function main(argv) {
     log("warn", "Le serveur a changé depuis l'appairage : nouvel appairage nécessaire.")
     state = null
   }
-  const once = argv.includes("--once")
-  if (!state) state = await pairWithRetry(config, once)
 
   let failures = 0
   for (;;) {
+    // Pas de jeton : appairage si un nouveau code est fourni, sinon veille
+    if (!state?.token) {
+      if (shouldPair(config.pairingCode, state?.dormant)) {
+        state = await pairOrSleep(config, once)
+        continue
+      }
+      if (!state?.dormant) {
+        // Ni jeton ni code : attente plutôt qu'un arrêt (Docker relancerait le conteneur en boucle)
+        const message =
+          "connecteur non appairé : renseignez VERTUOZ_PAIRING_CODE avec le code affiché par Vertuoz (page de la chaudière), puis redémarrez-le"
+        if (once) throw new Error(message)
+        log("error", message)
+      } else {
+        log("warn", `En veille : ${state.dormant.message}. ${dormantAdvice(state.dormant.reason)}`)
+      }
+      if (once) return
+      await sleep(DORMANT_REMINDER_HOURS * 3_600_000)
+      continue
+    }
+
     let intervalMinutes = config.intervalOverride ?? DEFAULT_INTERVAL_MINUTES
     try {
       const result = await runCycle(config, state)
       intervalMinutes = config.intervalOverride ?? result.intervalMinutes ?? intervalMinutes
       failures = 0
     } catch (error) {
-      if (error instanceof HttpError && error.status === 401) {
-        // Connecteur dissocié depuis Vertuoz : le jeton est oublié, un nouveau code est attendu
-        log("error", "Vertuoz ne reconnaît plus ce connecteur (dissocié ?) : renseignez un nouveau VERTUOZ_PAIRING_CODE.")
-        await rm(stateFile(config), { force: true })
+      if (error instanceof HttpError && (error.status === 401 || error.status === 410)) {
+        // Chaudière supprimée ou désactivée, ou connecteur dissocié : le jeton ne sert plus
+        state = await goDormant(config, error.reason ?? "unpaired", error.message, state.pairingCode)
         if (once) {
           process.exitCode = 2
           return
         }
-        state = await pairWithRetry(config, once)
         continue
       }
       failures++

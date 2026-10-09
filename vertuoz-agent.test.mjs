@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest"
 
-import { daysToSend, isComplete, normalizeUrl, parseListing } from "./vertuoz-agent.mjs"
+import {
+  canonicalCode,
+  daysToSend,
+  dormantAdvice,
+  isComplete,
+  normalizeUrl,
+  parseListing,
+  shouldPair,
+} from "./vertuoz-agent.mjs"
 
 describe("connecteur : normalizeUrl", () => {
   it("ajoute http:// et retire le / final", () => {
@@ -38,5 +46,25 @@ describe("connecteur : jours à envoyer", () => {
 
   it("n'envoie que les jours incomplets ou absents", () => {
     expect(daysToSend(["2026-10-03", "2026-10-04", "2026-10-05"], progress)).toEqual(["2026-10-04", "2026-10-05"])
+  })
+})
+
+describe("connecteur : veille après suppression ou dissociation", () => {
+  it("compare les codes sans tenir compte de la casse ni du tiret", () => {
+    expect(canonicalCode("ab cd-2345")).toBe("ABCD2345")
+  })
+
+  it("n'essaie pas de nouveau un code déjà consommé ou refusé", () => {
+    const dormant = { reason: "deleted", consumedCode: "ABCD2345" }
+    expect(shouldPair("abcd-2345", dormant)).toBe(false)
+    expect(shouldPair("WXYZ-6789", dormant)).toBe(true)
+    expect(shouldPair(null, dormant)).toBe(false)
+    expect(shouldPair("WXYZ-6789", undefined)).toBe(true)
+  })
+
+  it("propose la désinstallation quand la chaudière n'existe plus", () => {
+    expect(dormantAdvice("deleted")).toContain("docker rm -f vertuoz-agent")
+    expect(dormantAdvice("deactivated")).toContain("désinstaller")
+    expect(dormantAdvice("unpaired")).toContain("nouveau VERTUOZ_PAIRING_CODE")
   })
 })
