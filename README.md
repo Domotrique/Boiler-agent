@@ -2,7 +2,9 @@
 
 Petit programme à installer **chez le client, sur le même réseau que la chaudière**. Il lit les journaux
 de la régulation Ökofen Pelletronic Touch (`http://<chaudière>/logfiles/pelletronic`) et les envoie à
-Vertuoz toutes les 2 minutes.
+Vertuoz. La régulation écrit ses journaux (une ligne par minute) toutes les 2 heures environ : toutes les
+10 minutes, le connecteur vérifie que la chaudière répond (signe de vie) et n'envoie que les nouvelles lignes,
+rien si le journal n'a pas changé.
 
 - Connexions **sortantes uniquement** (HTTPS vers Vertuoz) : rien à ouvrir sur la box.
 - Aucune dépendance : un seul fichier, Node.js 18+ ou Docker.
@@ -79,7 +81,7 @@ registre, renseigner `NEXT_PUBLIC_AGENT_IMAGE` dans la configuration de Vertuoz.
 | `BOILER_URL` | Adresse de la chaudière sur le réseau local | obligatoire |
 | `VERTUOZ_PAIRING_CODE` | Code d'appairage (premier démarrage) | — |
 | `DATA_DIR` | Dossier du jeton | `./data` (`/data` avec Docker) |
-| `INTERVAL_MINUTES` | Forcer l'intervalle entre deux envois | celui de Vertuoz (2 min) |
+| `INTERVAL_MINUTES` | Forcer l'intervalle entre deux envois | celui de Vertuoz (10 min) |
 | `AGENT_NAME` | Nom affiché dans Vertuoz | nom de la machine (identifiant du conteneur sous Docker) |
 | `LOG_LEVEL` | `info` ou `debug` | `info` |
 

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 
 import {
+  newLinesOnly,
   canonicalCode,
   daysToSend,
   dormantAdvice,
@@ -75,5 +76,25 @@ describe("versions", () => {
     expect(compareVersions("1.0.1", "1.0.2")).toBeLessThan(0)
     expect(compareVersions("1.10.0", "1.9.9")).toBeGreaterThan(0)
     expect(compareVersions("1.0.1", "v1.0.1")).toBe(0)
+  })
+})
+
+describe("connecteur : seulement les nouvelles lignes (journaux écrits toutes les 2 heures)", () => {
+  const header = "Datum ;Zeit ;AT [°C];"
+  const csv = [header, "12.10.2026;13:58:00;8,1;", "12.10.2026;13:59:00;8,0;", "12.10.2026;14:00:00;7,9;", ""].join("\n")
+
+  it("en-tête et mesures postérieures à la dernière connue", () => {
+    expect(newLinesOnly(csv, "13:58:00")).toEqual({ body: `${header}\n12.10.2026;13:59:00;8,0;\n12.10.2026;14:00:00;7,9;\n`, count: 2 })
+  })
+
+  it("rien de nouveau : rien à envoyer", () => {
+    expect(newLinesOnly(csv, "14:00:00")).toEqual({ body: "", count: 0 })
+  })
+
+  it("journal entier sans avancement, sur demande de relecture ou au passage à l'heure d'hiver", () => {
+    expect(newLinesOnly(csv, undefined).count).toBe(3)
+    expect(newLinesOnly(csv, "00:00:00").body).toBe(csv)
+    const dst = [header, "25.10.2026;02:58:00;5;", "25.10.2026;02:59:00;5;", "25.10.2026;02:00:00;5;", "25.10.2026;02:01:00;5;"].join("\n")
+    expect(newLinesOnly(dst, "02:59:00")).toEqual({ body: dst, count: 4 })
   })
 })

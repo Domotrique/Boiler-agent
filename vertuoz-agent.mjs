@@ -28,13 +28,13 @@ import { hostname } from "node:os"
 import path from "node:path"
 import { pathToFileURL } from "node:url"
 
-export const AGENT_VERSION = "1.0.1"
+export const AGENT_VERSION = "1.1.0"
 
 const LOGFILES_PATH = "/logfiles/pelletronic"
 const BOILER_LISTING_TIMEOUT_MS = 10_000
 const BOILER_CSV_TIMEOUT_MS = 60_000
 const SERVER_TIMEOUT_MS = 60_000
-const DEFAULT_INTERVAL_MINUTES = 2
+const DEFAULT_INTERVAL_MINUTES = 10
 const MAX_BACKOFF_MINUTES = 30
 
 // ---------------------------------------------------------------------------
@@ -76,6 +76,23 @@ export function parseListing(html) {
     dates.add(`${m[1]}-${m[2]}-${m[3]}`)
   }
   return [...dates].sort()
+}
+
+/**
+ * Lignes à envoyer d'un journal : l'en-tête et les mesures postérieures à la dernière connue de Vertuoz
+ * (`sinceTime`, HH:MM:SS). La régulation n'écrit ses journaux que toutes les 2 heures environ : la plupart des
+ * cycles n'ont rien de nouveau (`count` nul) et n'envoient rien. Journal entier sans avancement connu, si
+ * Vertuoz demande une relecture (00:00:00) ou si l'heure recule dans le fichier (passage à l'heure d'hiver).
+ */
+export function newLinesOnly(csv, sinceTime) {
+  const lines = String(csv).split(/\r?\n/)
+  const header = lines[0] ?? ""
+  const data = lines.slice(1).filter((l) => l.trim() !== "")
+  const time = (line) => line.split(";")[1]?.trim() ?? ""
+  const rewound = data.some((l, i) => i > 0 && time(l) < time(data[i - 1]))
+  if (!sinceTime || sinceTime === "00:00:00" || rewound) return { body: csv, count: data.length }
+  const fresh = data.filter((l) => time(l) > sinceTime)
+  return { body: fresh.length > 0 ? `${[header, ...fresh].join("\n")}\n` : "", count: fresh.length }
 }
 
 /** Un jour est complet côté Vertuoz quand sa mesure de 23:59 est enregistrée */
@@ -266,13 +283,20 @@ export async function runCycle(config, state) {
   log("debug", `${dates.length} journal(aux) sur la chaudière, ${pending.length} à envoyer`)
 
   let filesSent = 0
+  let unchanged = 0
   let rowsInserted = 0
   let rowsRejected = 0
   const problems = []
   for (const date of pending) {
     try {
       const csv = await boilerGet(config.boilerUrl, `${LOGFILES_PATH}/touch_${date.replace(/-/g, "")}.csv`, BOILER_CSV_TIMEOUT_MS)
-      const res = await serverRequest(config, "POST", `/api/agent/v1/days/${date}`, { token: state.token, text: csv })
+      const { body, count } = newLinesOnly(csv, remote.progress?.[date])
+      // Journal inchangé depuis le dernier envoi : rien à transmettre (le compte rendu sert de signe de vie)
+      if (count === 0) {
+        unchanged++
+        continue
+      }
+      const res = await serverRequest(config, "POST", `/api/agent/v1/days/${date}`, { token: state.token, text: body })
       filesSent++
       rowsInserted += res.inserted
       rowsRejected += res.rejected
@@ -300,7 +324,10 @@ export async function runCycle(config, state) {
       startedAt,
     },
   })
-  log("info", `Cycle terminé : ${filesSent} journal(aux) envoyé(s), ${rowsInserted} nouvelle(s) mesure(s)`)
+  log(
+    "info",
+    `Cycle terminé : ${filesSent} journal(aux) envoyé(s), ${rowsInserted} nouvelle(s) mesure(s)${unchanged ? `, ${unchanged} inchangé(s)` : ""}`
+  )
   announceUpdate(ack?.latestVersion)
   return { intervalMinutes: remote.intervalMinutes, boilerReachable: true }
 }
