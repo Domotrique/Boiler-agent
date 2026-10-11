@@ -9,6 +9,9 @@ import {
   normalizeUrl,
   parseListing,
   shouldPair,
+  boilerMismatch,
+  isNewPairingCode,
+  mismatchAdvice,
 } from "./vertuoz-agent.mjs"
 
 describe("connecteur : normalizeUrl", () => {
@@ -96,5 +99,35 @@ describe("connecteur : seulement les nouvelles lignes (journaux écrits toutes l
     expect(newLinesOnly(csv, "00:00:00").body).toBe(csv)
     const dst = [header, "25.10.2026;02:58:00;5;", "25.10.2026;02:59:00;5;", "25.10.2026;02:00:00;5;", "25.10.2026;02:01:00;5;"].join("\n")
     expect(newLinesOnly(dst, "02:59:00")).toEqual({ body: dst, count: 4 })
+  })
+})
+
+describe("connecteur : une chaudière par jeton", () => {
+  const state = { token: "t", pairingCode: "ABCD2345", boilerUrl: "http://192.168.1.20" }
+
+  it("refait l'appairage quand un autre code est fourni", () => {
+    expect(isNewPairingCode("WXYZ-6789", state)).toBe(true)
+    expect(isNewPairingCode("abcd-2345", state)).toBe(false)
+    expect(isNewPairingCode(null, state)).toBe(false)
+    expect(isNewPairingCode("WXYZ-6789", null)).toBe(false)
+  })
+
+  it("ne réessaie pas un code refusé ni un ancien état sans code mémorisé", () => {
+    expect(isNewPairingCode("WXYZ-6789", { ...state, refusedCode: "WXYZ6789" })).toBe(false)
+    expect(isNewPairingCode("QRST-2345", { ...state, refusedCode: "WXYZ6789" })).toBe(true)
+    expect(isNewPairingCode("WXYZ-6789", { token: "t" })).toBe(false)
+  })
+
+  it("détecte une autre chaudière que celle de l'appairage", () => {
+    expect(boilerMismatch(state, "http://192.168.1.20")).toBeNull()
+    expect(boilerMismatch(state, "http://192.168.1.21")).toBe("http://192.168.1.20")
+    expect(boilerMismatch({ token: "t" }, "http://192.168.1.21")).toBeNull()
+    expect(boilerMismatch(null, "http://192.168.1.21")).toBeNull()
+  })
+
+  it("explique comment servir une seconde chaudière", () => {
+    const advice = mismatchAdvice("http://192.168.1.20", "http://192.168.1.21")
+    expect(advice).toContain("DATA_DIR")
+    expect(advice).toContain("nouveau code d'appairage")
   })
 })

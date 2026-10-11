@@ -12,7 +12,7 @@
  *   VERTUOZ_SERVER        adresse de Vertuoz (ex. https://app.vertuoz.fr)        obligatoire
  *   BOILER_URL            adresse de la chaudière (ex. http://192.168.1.20)       obligatoire
  *   VERTUOZ_PAIRING_CODE  code d'appairage affiché par Vertuoz (premier démarrage)
- *   DATA_DIR              dossier où est conservé le jeton (défaut : ./data)
+ *   DATA_DIR              dossier où est conservé le jeton (défaut : ./data) — un dossier par chaudière
  *   INTERVAL_MINUTES      intervalle forcé entre deux envois (défaut : celui de Vertuoz)
  *   AGENT_NAME            nom affiché dans Vertuoz (défaut : nom de la machine)
  *   LOG_LEVEL             info (défaut) ou debug
@@ -28,7 +28,7 @@ import { hostname } from "node:os"
 import path from "node:path"
 import { pathToFileURL } from "node:url"
 
-export const AGENT_VERSION = "1.1.0"
+export const AGENT_VERSION = "1.2.0"
 
 const LOGFILES_PATH = "/logfiles/pelletronic"
 const BOILER_LISTING_TIMEOUT_MS = 10_000
@@ -110,6 +110,36 @@ export function canonicalCode(code) {
 export function shouldPair(pairingCode, dormant) {
   if (!pairingCode) return false
   return !dormant?.consumedCode || canonicalCode(pairingCode) !== canonicalCode(dormant.consumedCode)
+}
+
+/**
+ * Un code différent de celui de l'appairage en cours est une demande explicite de nouvel appairage.
+ * Sans cette règle, un second connecteur lancé dans le même dossier ignorait son code et envoyait
+ * les journaux de SA chaudière avec le jeton de la première (historiques mélangés).
+ */
+export function isNewPairingCode(pairingCode, state) {
+  if (!pairingCode || !state?.token) return false
+  if (state.refusedCode && canonicalCode(state.refusedCode) === canonicalCode(pairingCode)) return false
+  // Ancien état sans code mémorisé : impossible de savoir si le code fourni est nouveau
+  return !!state.pairingCode && canonicalCode(pairingCode) !== canonicalCode(state.pairingCode)
+}
+
+/** Chaudière pour laquelle le jeton a été délivré, si BOILER_URL en désigne une autre (sinon null) */
+export function boilerMismatch(state, boilerUrl) {
+  if (!state?.token || !state.boilerUrl) return null
+  return state.boilerUrl === boilerUrl ? null : state.boilerUrl
+}
+
+/** Explication quand BOILER_URL ne correspond plus à la chaudière appairée */
+export function mismatchAdvice(pairedUrl, boilerUrl) {
+  return (
+    `ce connecteur a été appairé pour la chaudière ${pairedUrl}, mais BOILER_URL vaut ${boilerUrl} : ` +
+    "aucun envoi pour ne pas mélanger les historiques. " +
+    "S'il s'agit d'une autre chaudière, lancez un connecteur séparé avec son propre dossier DATA_DIR " +
+    "(ou son propre volume Docker) et le code d'appairage de cette chaudière. " +
+    "Si l'adresse de la même chaudière a changé, générez un nouveau code d'appairage dans Vertuoz " +
+    "et redémarrez avec VERTUOZ_PAIRING_CODE."
+  )
 }
 
 /** Instructions affichées quand le connecteur n'a plus de chaudière à servir */
@@ -256,6 +286,7 @@ async function pair(config) {
     installation: res.installation,
     pairedAt: new Date().toISOString(),
     pairingCode: canonicalCode(config.pairingCode),
+    boilerUrl: config.boilerUrl,
   }
   await saveState(config, state)
   log("info", `Appairé à l'installation « ${res.installation.name} ». Le code d'appairage n'est plus nécessaire.`)
@@ -364,12 +395,19 @@ async function goDormant(config, reason, message, consumedCode) {
  * veille. Seules les erreurs réseau sont réessayées, toutes les 5 minutes (sous Docker, quitter
  * provoquerait des redémarrages en boucle).
  */
-async function pairOrSleep(config, once) {
+async function pairOrSleep(config, once, previous) {
   for (;;) {
     try {
       return await pair(config)
     } catch (error) {
       if (error instanceof HttpError && error.status >= 400 && error.status < 500 && error.status !== 429) {
+        if (previous?.token) {
+          // Code refusé alors qu'un appairage existe : on le conserve, sans réessayer ce code
+          log("error", `${error.message} — l'appairage actuel est conservé.`)
+          const kept = { ...previous, refusedCode: canonicalCode(config.pairingCode) }
+          await saveState(config, kept)
+          return kept
+        }
         return goDormant(config, "pairing-refused", error.message, config.pairingCode)
       }
       if (once) throw error
@@ -396,6 +434,17 @@ async function main(argv) {
     log("warn", "Le serveur a changé depuis l'appairage : nouvel appairage nécessaire.")
     state = null
   }
+  if (state?.token && !state.boilerUrl) {
+    // État enregistré par une version antérieure : la chaudière actuelle devient celle du jeton
+    state = { ...state, boilerUrl: config.boilerUrl }
+    await saveState(config, state)
+  }
+  if (isNewPairingCode(config.pairingCode, state)) {
+    // Nouveau code : nouvel appairage. S'il est refusé, le jeton actuel reste valable
+    log("info", "Nouveau code d'appairage fourni : remplacement de l'appairage actuel.")
+    const previous = state
+    state = await pairOrSleep(config, once, previous)
+  }
 
   let failures = 0
   for (;;) {
@@ -415,6 +464,16 @@ async function main(argv) {
         log("warn", `En veille : ${state.dormant.message}. ${dormantAdvice(state.dormant.reason)}`)
       }
       if (once) return
+      await sleep(DORMANT_REMINDER_HOURS * 3_600_000)
+      continue
+    }
+
+    // Jeton délivré pour une autre chaudière : rien n'est envoyé (historiques mélangés sinon)
+    const pairedUrl = boilerMismatch(state, config.boilerUrl)
+    if (pairedUrl) {
+      const message = mismatchAdvice(pairedUrl, config.boilerUrl)
+      if (once) throw new Error(message)
+      log("error", message)
       await sleep(DORMANT_REMINDER_HOURS * 3_600_000)
       continue
     }

@@ -98,8 +98,8 @@ VERTUOZ_SERVER=https://app.vertuoz.fr BOILER_URL=http://192.168.1.20 node vertuo
 L'image est construite et publiée par le workflow GitHub `.github/workflows/agent-image.yml` :
 
 ```sh
-git tag agent-v1.0.0
-git push origin agent-v1.0.0
+git tag agent-v1.2.0
+git push origin agent-v1.2.0
 ```
 
 Elle apparaît dans l'onglet *Packages* du dépôt : la passer en **public** (Package settings → Change
@@ -121,9 +121,35 @@ registre, renseigner `NEXT_PUBLIC_AGENT_IMAGE` dans la configuration de Vertuoz.
 ## Commandes utiles
 
 - `node vertuoz-agent.mjs --once` : un seul cycle, pour tester.
-- `node vertuoz-agent.mjs --reset` : oublie le jeton (pour refaire l'appairage avec un nouveau code).
+- `node vertuoz-agent.mjs --reset` : oublie le jeton. Inutile pour refaire l'appairage : il suffit de
+  redémarrer avec un **nouveau** `VERTUOZ_PAIRING_CODE`, qui remplace l'appairage en cours.
 - Code d'appairage refusé (erroné, expiré, déjà utilisé) : le connecteur se met en veille ; corriger
   `VERTUOZ_PAIRING_CODE` puis le redémarrer. Si Vertuoz est injoignable, il réessaie toutes les 5 minutes.
+
+## Plusieurs chaudières
+
+**Un connecteur par chaudière, chacun avec son propre jeton** : un jeton correspond à une chaudière de
+Vertuoz. Lancer deux connecteurs depuis le même dossier (ou avec le même volume Docker) leur ferait
+partager un jeton, et les journaux des deux chaudières se mélangeraient dans un seul historique.
+
+- Docker : un nom de conteneur et un volume par chaudière (`--name vertuoz-agent-gite -v vertuoz-agent-data-gite:/data`).
+- Node.js : un dossier par chaudière, ou `DATA_DIR` distinct (`DATA_DIR=data-gite`).
+
+Les commandes affichées par Vertuoz le font déjà dès qu'un compte a plusieurs chaudières. Depuis la
+version 1.2.0, le connecteur mémorise l'adresse de la chaudière appairée et **refuse d'envoyer** si
+`BOILER_URL` en désigne une autre. Si l'adresse de la même chaudière a changé (box, DHCP), générez un
+nouveau code dans Vertuoz et redémarrez avec ce code. Vertuoz signale de son côté un connecteur plus
+ancien qui interroge une autre adresse que celle de l'appairage.
+
+Réparer un historique mélangé (exploitant de Vertuoz) :
+
+```sh
+npm run readings:purge -- --email client@exemple.fr                 # chaudières du compte et leurs mesures
+npm run readings:purge -- <id> --depuis 2026-10-01                  # aperçu par journée
+npm run readings:purge -- <id> --depuis 2026-10-01 --confirmer      # effacement
+```
+
+Au cycle suivant, le connecteur (correctement appairé) renvoie les journées encore présentes sur la chaudière.
 
 ## Tester avec la chaudière virtuelle
 
