@@ -60,6 +60,39 @@ un service (tâche planifiée Windows « au démarrage », service systemd sous 
 Le journal doit afficher `Appairé à l'installation « … »` puis `Cycle terminé : …`. Le jeton est enregistré
 dans `data/agent.json` (ou le volume `/data` avec Docker) : aux démarrages suivants, le code n'est plus utile.
 
+## 3. Mettre à jour le connecteur
+
+Quand une nouvelle version est publiée, la page de la chaudière affiche « Mise à jour disponible » avec les
+commandes pré-remplies. Le jeton est conservé (volume `/data` ou dossier `data`) : pas de nouveau code
+d'appairage.
+
+Docker :
+
+```sh
+docker pull ghcr.io/domotrique/vertuoz-agent:1
+docker stop vertuoz-agent && docker rm vertuoz-agent
+# puis relancer la commande « docker run » d'origine, sans VERTUOZ_PAIRING_CODE
+```
+
+Docker Compose : `docker compose pull` puis `docker compose up -d`.
+
+PowerShell (Windows), dans le dossier du connecteur, après l'avoir arrêté (Ctrl+C dans sa fenêtre, ou arrêt
+de la tâche planifiée) :
+
+```powershell
+Invoke-WebRequest -Uri https://app.vertuoz.fr/telechargements/vertuoz-agent.mjs -OutFile vertuoz-agent.mjs
+$env:VERTUOZ_SERVER="https://app.vertuoz.fr"
+$env:BOILER_URL="http://192.168.1.20"
+node vertuoz-agent.mjs
+```
+
+Linux / macOS, après l'avoir arrêté :
+
+```sh
+curl -fsSLO https://app.vertuoz.fr/telechargements/vertuoz-agent.mjs
+VERTUOZ_SERVER=https://app.vertuoz.fr BOILER_URL=http://192.168.1.20 node vertuoz-agent.mjs
+```
+
 ## Publier l'image (exploitant de Vertuoz)
 
 L'image est construite et publiée par le workflow GitHub `.github/workflows/agent-image.yml` :
