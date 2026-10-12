@@ -1,35 +1,35 @@
-# Connecteur Vertuoz
+# Connecteur Granulink
 
 Petit programme à installer **chez le client, sur le même réseau que la chaudière**. Il lit les journaux
 de la régulation Ökofen Pelletronic Touch (`http://<chaudière>/logfiles/pelletronic`) et les envoie à
-Vertuoz. La régulation écrit ses journaux (une ligne par minute) toutes les 2 heures environ : toutes les
+Granulink. La régulation écrit ses journaux (une ligne par minute) toutes les 2 heures environ : toutes les
 10 minutes, le connecteur vérifie que la chaudière répond (signe de vie) et n'envoie que les nouvelles lignes,
 rien si le journal n'a pas changé.
 
-- Connexions **sortantes uniquement** (HTTPS vers Vertuoz) : rien à ouvrir sur la box.
+- Connexions **sortantes uniquement** (HTTPS vers Granulink) : rien à ouvrir sur la box.
 - Aucune dépendance : un seul fichier, Node.js 18+ ou Docker.
 - Seuls les journaux manquants sont envoyés ; un jour complet n'est jamais renvoyé.
 
 ## 1. Obtenir un code d'appairage
 
-Dans Vertuoz : **Ajouter une chaudière** → mode **Connecteur local** → la page de la chaudière affiche un
+Dans Granulink : **Ajouter une chaudière** → mode **Connecteur local** → la page de la chaudière affiche un
 code `XXXX-XXXX`, valable 24 heures et à usage unique, ainsi que les commandes ci-dessous pré-remplies.
 
 ## 2. Lancer le connecteur
 
 Le client n'a **pas besoin du code source** : il utilise l'image Docker publiée ou télécharge le fichier
-du connecteur depuis Vertuoz.
+du connecteur depuis Granulink.
 
 ### Avec Docker (recommandé : redémarre tout seul)
 
 ```sh
-docker run -d --name vertuoz-agent --restart unless-stopped \
-  -e VERTUOZ_SERVER=https://app.vertuoz.fr \
+docker run -d --name granulink-agent --restart unless-stopped \
+  -e GRANULINK_SERVER=https://app.granulink.fr \
   -e BOILER_URL=http://192.168.1.20 \
-  -e VERTUOZ_PAIRING_CODE=XXXX-XXXX \
-  -v vertuoz-agent-data:/data \
-  ghcr.io/domotrique/vertuoz-agent:1
-docker logs -f vertuoz-agent
+  -e GRANULINK_PAIRING_CODE=XXXX-XXXX \
+  -v granulink-agent-data:/data \
+  ghcr.io/domotrique/granulink-agent:1
+docker logs -f granulink-agent
 ```
 
 Ou avec Docker Compose : renseigner `docker-compose.yml`, puis `docker compose up -d`.
@@ -40,18 +40,18 @@ L'image existe pour PC/NAS (amd64) et Raspberry Pi (arm64, armv7).
 PowerShell :
 
 ```powershell
-Invoke-WebRequest -Uri https://app.vertuoz.fr/telechargements/vertuoz-agent.mjs -OutFile vertuoz-agent.mjs
-$env:VERTUOZ_SERVER="https://app.vertuoz.fr"
+Invoke-WebRequest -Uri https://app.granulink.fr/telechargements/granulink-agent.mjs -OutFile granulink-agent.mjs
+$env:GRANULINK_SERVER="https://app.granulink.fr"
 $env:BOILER_URL="http://192.168.1.20"
-$env:VERTUOZ_PAIRING_CODE="XXXX-XXXX"
-node vertuoz-agent.mjs
+$env:GRANULINK_PAIRING_CODE="XXXX-XXXX"
+node granulink-agent.mjs
 ```
 
 Linux / macOS :
 
 ```sh
-curl -fsSLO https://app.vertuoz.fr/telechargements/vertuoz-agent.mjs
-VERTUOZ_SERVER=https://app.vertuoz.fr BOILER_URL=http://192.168.1.20 VERTUOZ_PAIRING_CODE=XXXX-XXXX node vertuoz-agent.mjs
+curl -fsSLO https://app.granulink.fr/telechargements/granulink-agent.mjs
+GRANULINK_SERVER=https://app.granulink.fr BOILER_URL=http://192.168.1.20 GRANULINK_PAIRING_CODE=XXXX-XXXX node granulink-agent.mjs
 ```
 
 Sans Docker, le connecteur s'arrête avec la fenêtre : pour un fonctionnement permanent, utiliser Docker ou
@@ -69,9 +69,9 @@ d'appairage.
 Docker :
 
 ```sh
-docker pull ghcr.io/domotrique/vertuoz-agent:1
-docker stop vertuoz-agent && docker rm vertuoz-agent
-# puis relancer la commande « docker run » d'origine, sans VERTUOZ_PAIRING_CODE
+docker pull ghcr.io/domotrique/granulink-agent:1
+docker stop granulink-agent && docker rm granulink-agent
+# puis relancer la commande « docker run » d'origine, sans GRANULINK_PAIRING_CODE
 ```
 
 Docker Compose : `docker compose pull` puis `docker compose up -d`.
@@ -80,20 +80,20 @@ PowerShell (Windows), dans le dossier du connecteur, après l'avoir arrêté (Ct
 de la tâche planifiée) :
 
 ```powershell
-Invoke-WebRequest -Uri https://app.vertuoz.fr/telechargements/vertuoz-agent.mjs -OutFile vertuoz-agent.mjs
-$env:VERTUOZ_SERVER="https://app.vertuoz.fr"
+Invoke-WebRequest -Uri https://app.granulink.fr/telechargements/granulink-agent.mjs -OutFile granulink-agent.mjs
+$env:GRANULINK_SERVER="https://app.granulink.fr"
 $env:BOILER_URL="http://192.168.1.20"
-node vertuoz-agent.mjs
+node granulink-agent.mjs
 ```
 
 Linux / macOS, après l'avoir arrêté :
 
 ```sh
-curl -fsSLO https://app.vertuoz.fr/telechargements/vertuoz-agent.mjs
-VERTUOZ_SERVER=https://app.vertuoz.fr BOILER_URL=http://192.168.1.20 node vertuoz-agent.mjs
+curl -fsSLO https://app.granulink.fr/telechargements/granulink-agent.mjs
+GRANULINK_SERVER=https://app.granulink.fr BOILER_URL=http://192.168.1.20 node granulink-agent.mjs
 ```
 
-## Publier l'image (exploitant de Vertuoz)
+## Publier l'image (exploitant de Granulink)
 
 L'image est construite et publiée par le workflow GitHub `.github/workflows/agent-image.yml` :
 
@@ -104,44 +104,44 @@ git push origin agent-v1.2.0
 
 Elle apparaît dans l'onglet *Packages* du dépôt : la passer en **public** (Package settings → Change
 visibility) pour que les clients puissent la télécharger sans compte GitHub. Pour utiliser un autre
-registre, renseigner `NEXT_PUBLIC_AGENT_IMAGE` dans la configuration de Vertuoz.
+registre, renseigner `NEXT_PUBLIC_AGENT_IMAGE` dans la configuration de Granulink.
 
 ## Variables
 
 | Variable | Rôle | Défaut |
 |---|---|---|
-| `VERTUOZ_SERVER` | Adresse de Vertuoz | obligatoire |
+| `GRANULINK_SERVER` | Adresse de Granulink | obligatoire |
 | `BOILER_URL` | Adresse de la chaudière sur le réseau local | obligatoire |
-| `VERTUOZ_PAIRING_CODE` | Code d'appairage (premier démarrage) | — |
+| `GRANULINK_PAIRING_CODE` | Code d'appairage (premier démarrage) | — |
 | `DATA_DIR` | Dossier du jeton | `./data` (`/data` avec Docker) |
-| `INTERVAL_MINUTES` | Forcer l'intervalle entre deux envois | celui de Vertuoz (10 min) |
-| `AGENT_NAME` | Nom affiché dans Vertuoz | nom de la machine (identifiant du conteneur sous Docker) |
+| `INTERVAL_MINUTES` | Forcer l'intervalle entre deux envois | celui de Granulink (10 min) |
+| `AGENT_NAME` | Nom affiché dans Granulink | nom de la machine (identifiant du conteneur sous Docker) |
 | `LOG_LEVEL` | `info` ou `debug` | `info` |
 
 ## Commandes utiles
 
-- `node vertuoz-agent.mjs --once` : un seul cycle, pour tester.
-- `node vertuoz-agent.mjs --reset` : oublie le jeton. Inutile pour refaire l'appairage : il suffit de
-  redémarrer avec un **nouveau** `VERTUOZ_PAIRING_CODE`, qui remplace l'appairage en cours.
+- `node granulink-agent.mjs --once` : un seul cycle, pour tester.
+- `node granulink-agent.mjs --reset` : oublie le jeton. Inutile pour refaire l'appairage : il suffit de
+  redémarrer avec un **nouveau** `GRANULINK_PAIRING_CODE`, qui remplace l'appairage en cours.
 - Code d'appairage refusé (erroné, expiré, déjà utilisé) : le connecteur se met en veille ; corriger
-  `VERTUOZ_PAIRING_CODE` puis le redémarrer. Si Vertuoz est injoignable, il réessaie toutes les 5 minutes.
+  `GRANULINK_PAIRING_CODE` puis le redémarrer. Si Granulink est injoignable, il réessaie toutes les 5 minutes.
 
 ## Plusieurs chaudières
 
 **Un connecteur par chaudière, chacun avec son propre jeton** : un jeton correspond à une chaudière de
-Vertuoz. Lancer deux connecteurs depuis le même dossier (ou avec le même volume Docker) leur ferait
+Granulink. Lancer deux connecteurs depuis le même dossier (ou avec le même volume Docker) leur ferait
 partager un jeton, et les journaux des deux chaudières se mélangeraient dans un seul historique.
 
-- Docker : un nom de conteneur et un volume par chaudière (`--name vertuoz-agent-gite -v vertuoz-agent-data-gite:/data`).
+- Docker : un nom de conteneur et un volume par chaudière (`--name granulink-agent-gite -v granulink-agent-data-gite:/data`).
 - Node.js : un dossier par chaudière, ou `DATA_DIR` distinct (`DATA_DIR=data-gite`).
 
-Les commandes affichées par Vertuoz le font déjà dès qu'un compte a plusieurs chaudières. Depuis la
+Les commandes affichées par Granulink le font déjà dès qu'un compte a plusieurs chaudières. Depuis la
 version 1.2.0, le connecteur mémorise l'adresse de la chaudière appairée et **refuse d'envoyer** si
 `BOILER_URL` en désigne une autre. Si l'adresse de la même chaudière a changé (box, DHCP), générez un
-nouveau code dans Vertuoz et redémarrez avec ce code. Vertuoz signale de son côté un connecteur plus
+nouveau code dans Granulink et redémarrez avec ce code. Granulink signale de son côté un connecteur plus
 ancien qui interroge une autre adresse que celle de l'appairage.
 
-Réparer un historique mélangé (exploitant de Vertuoz) :
+Réparer un historique mélangé (exploitant de Granulink) :
 
 ```sh
 npm run readings:purge -- --email client@exemple.fr                 # chaudières du compte et leurs mesures
@@ -156,34 +156,34 @@ Au cycle suivant, le connecteur (correctement appairé) renvoie les journées en
 La chaudière virtuelle répond sur `http://localhost:8181` du poste.
 
 - Sans Docker : `BOILER_URL=http://localhost:8181`.
-- Avec Docker Desktop : `BOILER_URL=http://host.docker.internal:8181` (et `VERTUOZ_SERVER=http://host.docker.internal:3000`
-  si Vertuoz tourne aussi sur le poste).
+- Avec Docker Desktop : `BOILER_URL=http://host.docker.internal:8181` (et `GRANULINK_SERVER=http://host.docker.internal:3000`
+  si Granulink tourne aussi sur le poste).
 
 ## Suppression de la chaudière et désinstallation
 
-Vertuoz ne peut pas désinstaller le connecteur à distance (il n'accepte aucune connexion entrante). Quand la
-chaudière est **supprimée** ou **désactivée** dans Vertuoz, ou le connecteur **dissocié**, le connecteur reçoit
-la raison au cycle suivant, oublie son jeton et **se met en veille** : il n'interroge plus Vertuoz et rappelle
+Granulink ne peut pas désinstaller le connecteur à distance (il n'accepte aucune connexion entrante). Quand la
+chaudière est **supprimée** ou **désactivée** dans Granulink, ou le connecteur **dissocié**, le connecteur reçoit
+la raison au cycle suivant, oublie son jeton et **se met en veille** : il n'interroge plus Granulink et rappelle
 toutes les 6 heures dans son journal comment le désinstaller ou le réutiliser.
 
 Désinstaller :
 
 ```sh
-docker rm -f vertuoz-agent && docker volume rm vertuoz-agent-data   # Docker
+docker rm -f granulink-agent && docker volume rm granulink-agent-data   # Docker
 docker compose down -v                                              # Docker Compose
 ```
 
-Sans Docker : arrêter le programme, puis supprimer `vertuoz-agent.mjs` et le dossier `data`.
+Sans Docker : arrêter le programme, puis supprimer `granulink-agent.mjs` et le dossier `data`.
 
-Réutiliser le connecteur (autre chaudière, nouvel appairage) : renseigner un **nouveau** `VERTUOZ_PAIRING_CODE`
+Réutiliser le connecteur (autre chaudière, nouvel appairage) : renseigner un **nouveau** `GRANULINK_PAIRING_CODE`
 et le redémarrer. Un code déjà utilisé ou refusé n'est jamais réessayé.
 
 ## Dépannage
 
 | Message | Cause probable |
 |---|---|
-| `Code d'appairage inconnu ou déjà utilisé` | Code déjà consommé : en générer un nouveau dans Vertuoz |
+| `Code d'appairage inconnu ou déjà utilisé` | Code déjà consommé : en générer un nouveau dans Granulink |
 | `Code d'appairage expiré` | Plus de 24 h : en générer un nouveau |
-| `Chaudière injoignable` | `BOILER_URL` incorrecte ou chaudière éteinte ; Vertuoz affiche l'installation « en erreur » |
-| `En veille : la chaudière … a été supprimée` | Chaudière supprimée ou désactivée dans Vertuoz : désinstaller le connecteur (voir plus haut) |
-| `En veille : ce connecteur a été dissocié…` | Redémarrer avec un nouveau `VERTUOZ_PAIRING_CODE` |
+| `Chaudière injoignable` | `BOILER_URL` incorrecte ou chaudière éteinte ; Granulink affiche l'installation « en erreur » |
+| `En veille : la chaudière … a été supprimée` | Chaudière supprimée ou désactivée dans Granulink : désinstaller le connecteur (voir plus haut) |
+| `En veille : ce connecteur a été dissocié…` | Redémarrer avec un nouveau `GRANULINK_PAIRING_CODE` |

@@ -12,17 +12,17 @@ import {
   boilerMismatch,
   isNewPairingCode,
   mismatchAdvice,
-} from "./vertuoz-agent.mjs"
+} from "./granulink-agent.mjs"
 
 describe("connecteur : normalizeUrl", () => {
   it("ajoute http:// et retire le / final", () => {
     expect(normalizeUrl("192.168.1.20")).toBe("http://192.168.1.20")
     expect(normalizeUrl("http://localhost:8181/")).toBe("http://localhost:8181")
-    expect(normalizeUrl("https://app.vertuoz.fr")).toBe("https://app.vertuoz.fr")
+    expect(normalizeUrl("https://app.granulink.fr")).toBe("https://app.granulink.fr")
   })
 
-  it("conserve un chemin (Vertuoz derrière un sous-dossier)", () => {
-    expect(normalizeUrl("https://exemple.fr/vertuoz/")).toBe("https://exemple.fr/vertuoz")
+  it("conserve un chemin (Granulink derrière un sous-dossier)", () => {
+    expect(normalizeUrl("https://exemple.fr/granulink/")).toBe("https://exemple.fr/granulink")
   })
 
   it("refuse une adresse vide ou un autre protocole", () => {
@@ -67,15 +67,15 @@ describe("connecteur : veille après suppression ou dissociation", () => {
   })
 
   it("propose la désinstallation quand la chaudière n'existe plus", () => {
-    expect(dormantAdvice("deleted")).toContain("docker rm -f vertuoz-agent")
+    expect(dormantAdvice("deleted")).toContain("docker rm -f granulink-agent")
     expect(dormantAdvice("deactivated")).toContain("désinstaller")
-    expect(dormantAdvice("unpaired")).toContain("nouveau VERTUOZ_PAIRING_CODE")
+    expect(dormantAdvice("unpaired")).toContain("nouveau GRANULINK_PAIRING_CODE")
   })
 })
 
 describe("versions", () => {
   it("compare les versions du connecteur", async () => {
-    const { compareVersions } = await import("./vertuoz-agent.mjs")
+    const { compareVersions } = await import("./granulink-agent.mjs")
     expect(compareVersions("1.0.1", "1.0.2")).toBeLessThan(0)
     expect(compareVersions("1.10.0", "1.9.9")).toBeGreaterThan(0)
     expect(compareVersions("1.0.1", "v1.0.1")).toBe(0)

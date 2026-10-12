@@ -1,26 +1,26 @@
 #!/usr/bin/env node
 /**
- * Connecteur Vertuoz
+ * Connecteur Granulink
  *
  * Installé chez le client, sur le même réseau que la chaudière : il lit les journaux CSV
- * de la régulation Ökofen Pelletronic Touch (/logfiles/pelletronic) et les envoie à Vertuoz
+ * de la régulation Ökofen Pelletronic Touch (/logfiles/pelletronic) et les envoie à Granulink
  * par HTTPS. Seules des connexions sortantes sont utilisées : rien à ouvrir sur la box.
  *
  * Aucune dépendance : Node.js 18 ou plus récent.
  *
  * Variables d'environnement :
- *   VERTUOZ_SERVER        adresse de Vertuoz (ex. https://app.vertuoz.fr)        obligatoire
+ *   GRANULINK_SERVER        adresse de Granulink (ex. https://app.granulink.fr)        obligatoire
  *   BOILER_URL            adresse de la chaudière (ex. http://192.168.1.20)       obligatoire
- *   VERTUOZ_PAIRING_CODE  code d'appairage affiché par Vertuoz (premier démarrage)
+ *   GRANULINK_PAIRING_CODE  code d'appairage affiché par Granulink (premier démarrage)
  *   DATA_DIR              dossier où est conservé le jeton (défaut : ./data) — un dossier par chaudière
- *   INTERVAL_MINUTES      intervalle forcé entre deux envois (défaut : celui de Vertuoz)
- *   AGENT_NAME            nom affiché dans Vertuoz (défaut : nom de la machine)
+ *   INTERVAL_MINUTES      intervalle forcé entre deux envois (défaut : celui de Granulink)
+ *   AGENT_NAME            nom affiché dans Granulink (défaut : nom de la machine)
  *   LOG_LEVEL             info (défaut) ou debug
  *
  * Commandes :
- *   node vertuoz-agent.mjs          appairage si nécessaire, puis envois en continu
- *   node vertuoz-agent.mjs --once   un seul cycle (test)
- *   node vertuoz-agent.mjs --reset  oublie le jeton (pour refaire l'appairage)
+ *   node granulink-agent.mjs          appairage si nécessaire, puis envois en continu
+ *   node granulink-agent.mjs --once   un seul cycle (test)
+ *   node granulink-agent.mjs --reset  oublie le jeton (pour refaire l'appairage)
  */
 
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises"
@@ -79,10 +79,10 @@ export function parseListing(html) {
 }
 
 /**
- * Lignes à envoyer d'un journal : l'en-tête et les mesures postérieures à la dernière connue de Vertuoz
+ * Lignes à envoyer d'un journal : l'en-tête et les mesures postérieures à la dernière connue de Granulink
  * (`sinceTime`, HH:MM:SS). La régulation n'écrit ses journaux que toutes les 2 heures environ : la plupart des
  * cycles n'ont rien de nouveau (`count` nul) et n'envoient rien. Journal entier sans avancement connu, si
- * Vertuoz demande une relecture (00:00:00) ou si l'heure recule dans le fichier (passage à l'heure d'hiver).
+ * Granulink demande une relecture (00:00:00) ou si l'heure recule dans le fichier (passage à l'heure d'hiver).
  */
 export function newLinesOnly(csv, sinceTime) {
   const lines = String(csv).split(/\r?\n/)
@@ -95,7 +95,7 @@ export function newLinesOnly(csv, sinceTime) {
   return { body: fresh.length > 0 ? `${[header, ...fresh].join("\n")}\n` : "", count: fresh.length }
 }
 
-/** Un jour est complet côté Vertuoz quand sa mesure de 23:59 est enregistrée */
+/** Un jour est complet côté Granulink quand sa mesure de 23:59 est enregistrée */
 export function isComplete(progress, date) {
   const last = progress?.[date]
   return typeof last === "string" && last >= "23:59:00"
@@ -137,8 +137,8 @@ export function mismatchAdvice(pairedUrl, boilerUrl) {
     "aucun envoi pour ne pas mélanger les historiques. " +
     "S'il s'agit d'une autre chaudière, lancez un connecteur séparé avec son propre dossier DATA_DIR " +
     "(ou son propre volume Docker) et le code d'appairage de cette chaudière. " +
-    "Si l'adresse de la même chaudière a changé, générez un nouveau code d'appairage dans Vertuoz " +
-    "et redémarrez avec VERTUOZ_PAIRING_CODE."
+    "Si l'adresse de la même chaudière a changé, générez un nouveau code d'appairage dans Granulink " +
+    "et redémarrez avec GRANULINK_PAIRING_CODE."
   )
 }
 
@@ -147,15 +147,15 @@ export function dormantAdvice(reason) {
   if (reason === "deleted" || reason === "deactivated") {
     return (
       "Ce connecteur n'a plus d'utilité : vous pouvez le désinstaller. " +
-      "Docker : docker rm -f vertuoz-agent && docker volume rm vertuoz-agent-data ; " +
-      "sans Docker : arrêtez le programme puis supprimez vertuoz-agent.mjs et le dossier data. " +
-      "Pour le réutiliser avec une autre chaudière, renseignez un nouveau VERTUOZ_PAIRING_CODE et redémarrez-le."
+      "Docker : docker rm -f granulink-agent && docker volume rm granulink-agent-data ; " +
+      "sans Docker : arrêtez le programme puis supprimez granulink-agent.mjs et le dossier data. " +
+      "Pour le réutiliser avec une autre chaudière, renseignez un nouveau GRANULINK_PAIRING_CODE et redémarrez-le."
     )
   }
-  return "Pour le réutiliser, renseignez un nouveau VERTUOZ_PAIRING_CODE (affiché par Vertuoz) et redémarrez-le."
+  return "Pour le réutiliser, renseignez un nouveau GRANULINK_PAIRING_CODE (affiché par Granulink) et redémarrez-le."
 }
 
-/** Jours à envoyer : ceux proposés par la chaudière et pas encore complets côté Vertuoz */
+/** Jours à envoyer : ceux proposés par la chaudière et pas encore complets côté Granulink */
 export function daysToSend(boilerDates, progress) {
   return boilerDates.filter((d) => !isComplete(progress, d))
 }
@@ -165,9 +165,10 @@ export function daysToSend(boilerDates, progress) {
 // ---------------------------------------------------------------------------
 
 function readConfig() {
-  const server = process.env.VERTUOZ_SERVER
+  // Anciens noms (VERTUOZ_*) acceptés : connecteurs installés avant le changement de nom
+  const server = process.env.GRANULINK_SERVER ?? process.env.VERTUOZ_SERVER
   const boiler = process.env.BOILER_URL
-  const missing = [!server && "VERTUOZ_SERVER", !boiler && "BOILER_URL"].filter(Boolean)
+  const missing = [!server && "GRANULINK_SERVER", !boiler && "BOILER_URL"].filter(Boolean)
   if (missing.length > 0) {
     throw new Error(`variable(s) d'environnement manquante(s) : ${missing.join(", ")}`)
   }
@@ -175,7 +176,7 @@ function readConfig() {
   return {
     server: normalizeUrl(server),
     boilerUrl: normalizeUrl(boiler),
-    pairingCode: process.env.VERTUOZ_PAIRING_CODE?.trim() || null,
+    pairingCode: (process.env.GRANULINK_PAIRING_CODE ?? process.env.VERTUOZ_PAIRING_CODE)?.trim() || null,
     dataDir: path.resolve(process.env.DATA_DIR ?? "data"),
     intervalOverride: Number.isFinite(interval) && interval >= 1 ? interval : null,
   }
@@ -244,7 +245,7 @@ async function boilerGet(boilerUrl, pathname, timeoutMs) {
 
 async function serverRequest(config, method, pathname, { token, json, text } = {}) {
   const url = `${config.server}${pathname}`
-  const headers = { "user-agent": `vertuoz-agent/${AGENT_VERSION}` }
+  const headers = { "user-agent": `granulink-agent/${AGENT_VERSION}` }
   if (token) headers.authorization = `Bearer ${token}`
   let body
   if (json !== undefined) {
@@ -258,10 +259,10 @@ async function serverRequest(config, method, pathname, { token, json, text } = {
   try {
     res = await fetch(url, { method, headers, body, signal: AbortSignal.timeout(SERVER_TIMEOUT_MS) })
   } catch (error) {
-    throw new HttpError(0, `Vertuoz injoignable (${describeFetchError(error, url, SERVER_TIMEOUT_MS)})`)
+    throw new HttpError(0, `Granulink injoignable (${describeFetchError(error, url, SERVER_TIMEOUT_MS)})`)
   }
   const payload = await res.json().catch(() => ({}))
-  if (!res.ok) throw new HttpError(res.status, payload.error ?? `Vertuoz a répondu ${res.status}`, payload.reason)
+  if (!res.ok) throw new HttpError(res.status, payload.error ?? `Granulink a répondu ${res.status}`, payload.reason)
   return payload
 }
 
@@ -272,7 +273,7 @@ async function serverRequest(config, method, pathname, { token, json, text } = {
 async function pair(config) {
   if (!config.pairingCode) {
     throw new Error(
-      "connecteur non appairé : renseignez VERTUOZ_PAIRING_CODE avec le code affiché par Vertuoz (page de la chaudière)"
+      "connecteur non appairé : renseignez GRANULINK_PAIRING_CODE avec le code affiché par Granulink (page de la chaudière)"
     )
   }
   await checkDataDir(config)
@@ -293,7 +294,7 @@ async function pair(config) {
   return state
 }
 
-/** Un cycle : liste les journaux de la chaudière et envoie ceux qui manquent à Vertuoz */
+/** Un cycle : liste les journaux de la chaudière et envoie ceux qui manquent à Granulink */
 export async function runCycle(config, state) {
   const startedAt = new Date().toISOString()
   const remote = await serverRequest(config, "GET", "/api/agent/v1/state", { token: state.token })
@@ -376,14 +377,14 @@ let announcedVersion = null
 function announceUpdate(latest) {
   if (typeof latest !== "string" || latest === announcedVersion || compareVersions(AGENT_VERSION, latest) >= 0) return
   announcedVersion = latest
-  log("warn", `Nouvelle version du connecteur disponible : ${AGENT_VERSION} → ${latest} (voir la page de la chaudière dans Vertuoz)`)
+  log("warn", `Nouvelle version du connecteur disponible : ${AGENT_VERSION} → ${latest} (voir la page de la chaudière dans Granulink)`)
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const PAIRING_RETRY_MINUTES = 5
 const DORMANT_REMINDER_HOURS = 6
 
-/** Met le connecteur en veille : plus aucune requête vers Vertuoz tant qu'un nouveau code n'est pas fourni */
+/** Met le connecteur en veille : plus aucune requête vers Granulink tant qu'un nouveau code n'est pas fourni */
 async function goDormant(config, reason, message, consumedCode) {
   const dormant = { reason, message, consumedCode: consumedCode ?? null, since: new Date().toISOString() }
   await saveState(config, { server: config.server, dormant })
@@ -427,7 +428,7 @@ async function main(argv) {
     return
   }
 
-  log("info", `Connecteur Vertuoz ${AGENT_VERSION} — chaudière ${config.boilerUrl}, serveur ${config.server}`)
+  log("info", `Connecteur Granulink ${AGENT_VERSION} — chaudière ${config.boilerUrl}, serveur ${config.server}`)
 
   let state = await loadState(config)
   if (state && state.server !== config.server) {
@@ -457,7 +458,7 @@ async function main(argv) {
       if (!state?.dormant) {
         // Ni jeton ni code : attente plutôt qu'un arrêt (Docker relancerait le conteneur en boucle)
         const message =
-          "connecteur non appairé : renseignez VERTUOZ_PAIRING_CODE avec le code affiché par Vertuoz (page de la chaudière), puis redémarrez-le"
+          "connecteur non appairé : renseignez GRANULINK_PAIRING_CODE avec le code affiché par Granulink (page de la chaudière), puis redémarrez-le"
         if (once) throw new Error(message)
         log("error", message)
       } else {
@@ -495,7 +496,7 @@ async function main(argv) {
       }
       failures++
       log("error", error.message)
-      // Nouvel essai de plus en plus espacé quand Vertuoz est injoignable
+      // Nouvel essai de plus en plus espacé quand Granulink est injoignable
       intervalMinutes = Math.min(MAX_BACKOFF_MINUTES, intervalMinutes * 2 ** Math.min(failures - 1, 4))
     }
     if (once) return
