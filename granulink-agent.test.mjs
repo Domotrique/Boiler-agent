@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs"
+import path from "node:path"
+
 import { describe, expect, it } from "vitest"
 
 import {
@@ -12,6 +15,10 @@ import {
   boilerMismatch,
   isNewPairingCode,
   mismatchAdvice,
+  enqueue,
+  jsonUrl,
+  maskedJsonUrl,
+  readingFromJson,
 } from "./granulink-agent.mjs"
 
 describe("connecteur : normalizeUrl", () => {
@@ -129,5 +136,51 @@ describe("connecteur : une chaudière par jeton", () => {
     const advice = mismatchAdvice("http://192.168.1.20", "http://192.168.1.21")
     expect(advice).toContain("DATA_DIR")
     expect(advice).toContain("nouveau code d'appairage")
+  })
+})
+
+describe("connecteur : interface JSON (firmware V4)", () => {
+  const v3 = JSON.parse(readFileSync(path.resolve("agent/fixtures/oekofen-v3-all.json"), "utf8"))
+
+  it("adresse : même hôte que la chaudière, port et mot de passe de l'interface", () => {
+    expect(jsonUrl("http://192.168.1.20", 4321, "aB3x")).toBe("http://192.168.1.20:4321/aB3x/all")
+    expect(jsonUrl("http://localhost:8181", 4321, "12 34")).toBe("http://localhost:4321/12%2034/all")
+    expect(maskedJsonUrl("http://192.168.1.20", 4321)).toBe("http://192.168.1.20:4321/***/all")
+  })
+
+  it("relevé d'une vraie chaudière (V3, à l'arrêt) : dixièmes, sonde absente, booléens", () => {
+    const r = readingFromJson(v3, new Date("2026-10-14T16:11:00Z"))
+    expect(r).toEqual({
+      at: "2026-10-14T16:11:00.000Z",
+      outdoorTempC: 18.9,
+      boilerTempC: 19.7,
+      boilerTempSetC: 8,
+      flowTempC: 21.9,
+      flowTempSetC: 8,
+      roomTempC: 22,
+      roomTempSetC: 8,
+      flameTempC: 19.7,
+      modulationPct: 0,
+      boilerStatus: 99,
+      heatingPumpOn: false,
+      pelletCounterTodayKg: 0,
+      pelletCounterYesterdayKg: 0,
+    })
+  })
+
+  it("sonde extérieure de la chaudière en secours, -32768 ignoré", () => {
+    const data = { ...v3, system: {}, pe1: { ...v3.pe1, L_ext_temp: "-52" } }
+    expect(readingFromJson(data).outdoorTempC).toBe(-5.2)
+    expect(readingFromJson({ ...v3, system: {} }).outdoorTempC).toBeNull()
+  })
+
+  it("réponse sans chaudière : erreur explicite", () => {
+    expect(() => readingFromJson({ system: {} })).toThrow(/pe1/)
+    expect(() => readingFromJson(null)).toThrow()
+  })
+
+  it("file d'attente bornée : les plus anciens relevés sont abandonnés", () => {
+    expect(enqueue([1, 2], [3], 5)).toEqual([1, 2, 3])
+    expect(enqueue([1, 2, 3, 4], [5, 6], 5)).toEqual([2, 3, 4, 5, 6])
   })
 })

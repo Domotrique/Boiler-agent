@@ -2,7 +2,8 @@
 
 Petit programme à installer **chez le client, sur le même réseau que la chaudière**. Il lit les journaux
 de la régulation Ökofen Pelletronic Touch (`http://<chaudière>/logfiles/pelletronic`) et les envoie à
-Granulink. La régulation écrit ses journaux (une ligne par minute) toutes les 2 heures environ : toutes les
+Granulink. En firmware V4 (plus de journaux), il relève chaque minute l'interface JSON de la régulation
+(voir [Firmware V4](#firmware-v4--interface-json)). La régulation écrit ses journaux (une ligne par minute) toutes les 2 heures environ : toutes les
 10 minutes, le connecteur vérifie que la chaudière répond (signe de vie) et n'envoie que les nouvelles lignes,
 rien si le journal n'a pas changé.
 
@@ -113,6 +114,9 @@ registre, renseigner `NEXT_PUBLIC_AGENT_IMAGE` dans la configuration de Granulin
 | `GRANULINK_SERVER` | Adresse de Granulink | obligatoire |
 | `BOILER_URL` | Adresse de la chaudière sur le réseau local | obligatoire |
 | `GRANULINK_PAIRING_CODE` | Code d'appairage (premier démarrage) | — |
+| `BOILER_JSON_PASSWORD` | Mot de passe de l'interface JSON (firmware V4) | — |
+| `BOILER_JSON_PORT` | Port de l'interface JSON | `4321` |
+| `BOILER_SOURCE` | `auto` (journaux CSV, sinon interface JSON), `csv` ou `json` | `auto` |
 | `DATA_DIR` | Dossier du jeton | `./data` (`/data` avec Docker) |
 | `INTERVAL_MINUTES` | Forcer l'intervalle entre deux envois | celui de Granulink (10 min) |
 | `AGENT_NAME` | Nom affiché dans Granulink | nom de la machine (identifiant du conteneur sous Docker) |
@@ -151,13 +155,35 @@ npm run readings:purge -- <id> --depuis 2026-10-01 --confirmer      # effacement
 
 Au cycle suivant, le connecteur (correctement appairé) renvoie les journées encore présentes sur la chaudière.
 
+## Firmware V4 : interface JSON
+
+Depuis le firmware V4, la Pelletronic Touch n'a plus de serveur web : ni journaux CSV, ni `/index.cgi`. Seule
+reste l'interface JSON (`http://<chaudière>:4321/<mot de passe>/all`), à activer sur l'écran (mode avancé,
+Général › IPConfig, qui donne aussi le mot de passe).
+
+Avec `BOILER_JSON_PASSWORD`, le connecteur essaie d'abord les journaux ; s'ils sont introuvables et que
+l'interface JSON répond, il passe au **relevé minute par minute** (`BOILER_SOURCE=json` l'impose) :
+
+- un relevé par minute, conservé dans une file d'attente (`readings-queue.json` du dossier `DATA_DIR`, une semaine
+  au plus) et envoyé à chaque cycle : une coupure de Granulink ne perd rien ;
+- texte décodé en Windows-1252, températures en dixièmes, `-32768` (sonde absente) ignoré ;
+- pas d'historique sur la chaudière : les données commencent au démarrage du connecteur ;
+- la consommation est recalée par Granulink sur le compteur de granulés de la chaudière
+  (`pe1.storage_fill_today`) quand il est alimenté, sinon estimée d'après la modulation et la puissance.
+
+Si la régulation (firmware V3.10c/d) est réglée en allemand, les umlauts rendent la réponse invalide : passer
+l'écran en anglais.
+
 ## Tester avec la chaudière virtuelle
 
-La chaudière virtuelle répond sur `http://localhost:8181` du poste.
+La chaudière virtuelle répond sur `http://localhost:8181` du poste (interface JSON : port 4321, mot de passe
+`1234`).
 
 - Sans Docker : `BOILER_URL=http://localhost:8181`.
 - Avec Docker Desktop : `BOILER_URL=http://host.docker.internal:8181` (et `GRANULINK_SERVER=http://host.docker.internal:3000`
   si Granulink tourne aussi sur le poste).
+- Firmware V4 : `/_sim?firmware=4` sur la chaudière virtuelle, puis `BOILER_JSON_PASSWORD=1234` ;
+  `/_sim?compteurs=non` simule une chaudière sans compteur de granulés (consommation estimée).
 
 ## Suppression de la chaudière et désinstallation
 
@@ -185,5 +211,7 @@ et le redémarrer. Un code déjà utilisé ou refusé n'est jamais réessayé.
 | `Code d'appairage inconnu ou déjà utilisé` | Code déjà consommé : en générer un nouveau dans Granulink |
 | `Code d'appairage expiré` | Plus de 24 h : en générer un nouveau |
 | `Chaudière injoignable` | `BOILER_URL` incorrecte ou chaudière éteinte ; Granulink affiche l'installation « en erreur » |
+| `… interface JSON : mot de passe JSON refusé` | `BOILER_JSON_PASSWORD` différent de celui de l'écran (Général › IPConfig) |
+| `… réponse illisible (JSON invalide)` | Régulation réglée en allemand (firmware V3.10) : la passer en anglais |
 | `En veille : la chaudière … a été supprimée` | Chaudière supprimée ou désactivée dans Granulink : désinstaller le connecteur (voir plus haut) |
 | `En veille : ce connecteur a été dissocié…` | Redémarrer avec un nouveau `GRANULINK_PAIRING_CODE` |

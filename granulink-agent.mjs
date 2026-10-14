@@ -4,7 +4,9 @@
  *
  * Installé chez le client, sur le même réseau que la chaudière : il lit les journaux CSV
  * de la régulation Ökofen Pelletronic Touch (/logfiles/pelletronic) et les envoie à Granulink
- * par HTTPS. Seules des connexions sortantes sont utilisées : rien à ouvrir sur la box.
+ * par HTTPS. Firmware V4 (plus de journaux) : il relève chaque minute l'interface JSON de la
+ * régulation (port 4321) et envoie ces relevés. Seules des connexions sortantes sont utilisées :
+ * rien à ouvrir sur la box.
  *
  * Aucune dépendance : Node.js 18 ou plus récent.
  *
@@ -12,6 +14,9 @@
  *   GRANULINK_SERVER        adresse de Granulink (ex. https://app.granulink.fr)        obligatoire
  *   BOILER_URL            adresse de la chaudière (ex. http://192.168.1.20)       obligatoire
  *   GRANULINK_PAIRING_CODE  code d'appairage affiché par Granulink (premier démarrage)
+ *   BOILER_JSON_PASSWORD  mot de passe de l'interface JSON (écran : Général › IPConfig) — firmware V4
+ *   BOILER_JSON_PORT      port de l'interface JSON (défaut : 4321)
+ *   BOILER_SOURCE         auto (défaut : journaux CSV, sinon interface JSON), csv ou json
  *   DATA_DIR              dossier où est conservé le jeton (défaut : ./data) — un dossier par chaudière
  *   INTERVAL_MINUTES      intervalle forcé entre deux envois (défaut : celui de Granulink)
  *   AGENT_NAME            nom affiché dans Granulink (défaut : nom de la machine)
@@ -23,12 +28,12 @@
  *   node granulink-agent.mjs --reset  oublie le jeton (pour refaire l'appairage)
  */
 
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { hostname } from "node:os"
 import path from "node:path"
 import { pathToFileURL } from "node:url"
 
-export const AGENT_VERSION = "1.2.0"
+export const AGENT_VERSION = "1.3.0"
 
 const LOGFILES_PATH = "/logfiles/pelletronic"
 const BOILER_LISTING_TIMEOUT_MS = 10_000
@@ -36,6 +41,15 @@ const BOILER_CSV_TIMEOUT_MS = 60_000
 const SERVER_TIMEOUT_MS = 60_000
 const DEFAULT_INTERVAL_MINUTES = 10
 const MAX_BACKOFF_MINUTES = 30
+const DEFAULT_JSON_PORT = 4321
+const BOILER_JSON_TIMEOUT_MS = 15_000
+/** Interface JSON : un relevé par minute (la régulation refuse les interrogations trop rapprochées) */
+const JSON_POLL_MS = 60_000
+/** Relevés envoyés par requête, et conservés au plus en attente (une semaine) si Granulink est injoignable */
+const READINGS_PER_REQUEST = 1440
+const MAX_QUEUED_READINGS = 7 * 1440
+/** Au-delà de ce délai sans relevé réussi, la chaudière est signalée injoignable */
+const JSON_STALE_MS = 5 * 60_000
 
 // ---------------------------------------------------------------------------
 // Journalisation
@@ -155,6 +169,72 @@ export function dormantAdvice(reason) {
   return "Pour le réutiliser, renseignez un nouveau GRANULINK_PAIRING_CODE (affiché par Granulink) et redémarrez-le."
 }
 
+/** Adresse de l'interface JSON : même hôte que BOILER_URL, port de l'interface, mot de passe dans le chemin */
+export function jsonUrl(boilerUrl, port, password) {
+  const url = new URL(boilerUrl)
+  url.port = String(port)
+  url.pathname = `/${encodeURIComponent(password)}/all`
+  return url.toString()
+}
+
+/** La même adresse, mot de passe masqué (journaux, comptes rendus) */
+export function maskedJsonUrl(boilerUrl, port) {
+  return jsonUrl(boilerUrl, port, "***").replace("%2A%2A%2A", "***")
+}
+
+// Valeurs de l'interface JSON : chaînes, températures en dixièmes, -32768 pour une sonde absente
+const SENSOR_MISSING = -32768
+function jsonNumber(value) {
+  if (value === undefined || value === null || value === "") return null
+  const n = Number(value)
+  return Number.isFinite(n) && n !== SENSOR_MISSING ? n : null
+}
+const tenths = (value) => {
+  const n = jsonNumber(value)
+  return n === null ? null : Math.round(n) / 10
+}
+function jsonBool(value) {
+  if (value === true || value === "true") return true
+  if (value === false || value === "false") return false
+  return null
+}
+
+/**
+ * Relevé d'une minute à partir de la réponse de /all (firmware V3 ou V4), au format attendu par Granulink.
+ * Les compteurs de granulés (storage_fill_today/yesterday) ne sont alimentés que sur les chaudières récentes.
+ */
+export function readingFromJson(data, at = new Date()) {
+  const system = data?.system ?? {}
+  const pe = data?.pe1 ?? {}
+  const hk = data?.hk1 ?? {}
+  if (!data || typeof data !== "object" || Object.keys(pe).length === 0) {
+    throw new Error("réponse de l'interface JSON sans section pe1 : est-ce bien une chaudière Ökofen ?")
+  }
+  const status = jsonNumber(pe.L_state)
+  return {
+    at: new Date(at).toISOString(),
+    outdoorTempC: tenths(system.L_ambient) ?? tenths(pe.L_ext_temp),
+    boilerTempC: tenths(pe.L_temp_act),
+    boilerTempSetC: tenths(pe.L_temp_set),
+    flowTempC: tenths(hk.L_flowtemp_act),
+    flowTempSetC: tenths(hk.L_flowtemp_set),
+    roomTempC: tenths(hk.L_roomtemp_act),
+    roomTempSetC: tenths(hk.L_roomtemp_set),
+    flameTempC: tenths(pe.L_frt_temp_act),
+    modulationPct: jsonNumber(pe.L_modulation),
+    boilerStatus: status === null ? null : Math.round(status),
+    heatingPumpOn: jsonBool(hk.L_pump),
+    pelletCounterTodayKg: jsonNumber(pe.storage_fill_today ?? pe.L_storage_fill_today),
+    pelletCounterYesterdayKg: jsonNumber(pe.storage_fill_yesterday ?? pe.L_storage_fill_yesterday),
+  }
+}
+
+/** Ajoute des relevés à la file d'attente, sans dépasser sa capacité (les plus anciens sont abandonnés) */
+export function enqueue(queue, readings, max = MAX_QUEUED_READINGS) {
+  const next = [...queue, ...readings]
+  return next.length > max ? next.slice(next.length - max) : next
+}
+
 /** Jours à envoyer : ceux proposés par la chaudière et pas encore complets côté Granulink */
 export function daysToSend(boilerDates, progress) {
   return boilerDates.filter((d) => !isComplete(progress, d))
@@ -173,9 +253,17 @@ function readConfig() {
     throw new Error(`variable(s) d'environnement manquante(s) : ${missing.join(", ")}`)
   }
   const interval = Number(process.env.INTERVAL_MINUTES)
+  const jsonPort = Number(process.env.BOILER_JSON_PORT || DEFAULT_JSON_PORT)
+  const source = (process.env.BOILER_SOURCE ?? "auto").trim().toLowerCase() || "auto"
+  if (!["auto", "csv", "json"].includes(source)) throw new Error("BOILER_SOURCE : auto, csv ou json attendu")
+  const jsonPassword = process.env.BOILER_JSON_PASSWORD?.trim() || null
+  if (source === "json" && !jsonPassword) throw new Error("BOILER_SOURCE=json : renseignez BOILER_JSON_PASSWORD")
   return {
     server: normalizeUrl(server),
     boilerUrl: normalizeUrl(boiler),
+    source,
+    jsonPassword,
+    jsonPort: Number.isInteger(jsonPort) && jsonPort > 0 && jsonPort < 65536 ? jsonPort : DEFAULT_JSON_PORT,
     pairingCode: (process.env.GRANULINK_PAIRING_CODE ?? process.env.VERTUOZ_PAIRING_CODE)?.trim() || null,
     dataDir: path.resolve(process.env.DATA_DIR ?? "data"),
     intervalOverride: Number.isFinite(interval) && interval >= 1 ? interval : null,
@@ -243,6 +331,27 @@ async function boilerGet(boilerUrl, pathname, timeoutMs) {
   return new TextDecoder("latin1").decode(await res.arrayBuffer())
 }
 
+/** Réponse de l'interface JSON (texte en Windows-1252) */
+async function boilerJson(config) {
+  const url = jsonUrl(config.boilerUrl, config.jsonPort, config.jsonPassword)
+  const shown = maskedJsonUrl(config.boilerUrl, config.jsonPort)
+  let res
+  try {
+    res = await fetch(url, { signal: AbortSignal.timeout(BOILER_JSON_TIMEOUT_MS) })
+  } catch (error) {
+    throw new Error(describeFetchError(error, shown, BOILER_JSON_TIMEOUT_MS))
+  }
+  if (res.status === 401 || res.status === 403) throw new Error(`${shown} : mot de passe JSON refusé (BOILER_JSON_PASSWORD)`)
+  if (!res.ok) throw new Error(`${shown} : la chaudière a répondu ${res.status}`)
+  const text = new TextDecoder("windows-1252").decode(await res.arrayBuffer())
+  try {
+    return JSON.parse(text)
+  } catch {
+    // Firmware V3.10c/d en allemand : les umlauts cassent le JSON (régler l'écran en anglais)
+    throw new Error(`${shown} : réponse illisible (JSON invalide) ; si la régulation est en allemand, passez-la en anglais`)
+  }
+}
+
 async function serverRequest(config, method, pathname, { token, json, text } = {}) {
   const url = `${config.server}${pathname}`
   const headers = { "user-agent": `granulink-agent/${AGENT_VERSION}` }
@@ -303,10 +412,20 @@ export async function runCycle(config, state) {
   try {
     dates = parseListing(await boilerGet(config.boilerUrl, LOGFILES_PATH, BOILER_LISTING_TIMEOUT_MS))
   } catch (error) {
+    // Pas de journaux : firmware V4, dont seule reste l'interface JSON
+    if (config.source === "auto" && config.jsonPassword) {
+      try {
+        await boilerJson(config)
+        log("info", "Journaux CSV indisponibles, interface JSON joignable : relevé minute par minute (firmware V4).")
+        return { intervalMinutes: remote.intervalMinutes, switchToJson: true }
+      } catch (jsonError) {
+        error.message = `${error.message} ; interface JSON : ${jsonError.message}`
+      }
+    }
     log("warn", `Chaudière injoignable : ${error.message}`)
     await serverRequest(config, "POST", "/api/agent/v1/heartbeat", {
       token: state.token,
-      json: { boilerReachable: false, error: error.message, boilerUrl: config.boilerUrl, hostname: agentName(), version: AGENT_VERSION, startedAt },
+      json: { boilerReachable: false, error: error.message, boilerUrl: config.boilerUrl, hostname: agentName(), version: AGENT_VERSION, startedAt, source: "csv" },
     })
     return { intervalMinutes: remote.intervalMinutes, boilerReachable: false }
   }
@@ -354,6 +473,7 @@ export async function runCycle(config, state) {
       rowsInserted,
       rowsRejected,
       startedAt,
+      source: "csv",
     },
   })
   log(
@@ -362,6 +482,104 @@ export async function runCycle(config, state) {
   )
   announceUpdate(ack?.latestVersion)
   return { intervalMinutes: remote.intervalMinutes, boilerReachable: true }
+}
+
+// ---------------------------------------------------------------------------
+// Interface JSON (firmware V4) : relevé minute par minute, file d'attente sur disque, envoi à chaque cycle
+// ---------------------------------------------------------------------------
+
+const jsonPolling = { queue: null, timer: null, lastOkAt: 0, lastError: null, busy: false }
+
+function queueFile(config) {
+  return path.join(config.dataDir, "readings-queue.json")
+}
+
+async function loadQueue(config) {
+  try {
+    const queue = JSON.parse(await readFile(queueFile(config), "utf8"))
+    return Array.isArray(queue) ? queue : []
+  } catch {
+    return []
+  }
+}
+
+/** File d'attente enregistrée à chaque relevé : un redémarrage ou une coupure de Granulink ne perd rien */
+async function saveQueue(config, queue) {
+  await mkdir(config.dataDir, { recursive: true })
+  const file = queueFile(config)
+  await writeFile(`${file}.tmp`, JSON.stringify(queue), { mode: 0o600 })
+  await rename(`${file}.tmp`, file)
+}
+
+async function pollJson(config) {
+  if (jsonPolling.busy) return
+  jsonPolling.busy = true
+  try {
+    const reading = readingFromJson(await boilerJson(config))
+    jsonPolling.queue = enqueue(jsonPolling.queue ?? [], [reading])
+    jsonPolling.lastOkAt = Date.now()
+    jsonPolling.lastError = null
+    await saveQueue(config, jsonPolling.queue)
+    log("debug", `Relevé JSON : état ${reading.boilerStatus}, ${reading.boilerTempC} °C, ${jsonPolling.queue.length} en attente`)
+  } catch (error) {
+    jsonPolling.lastError = error.message
+    log("warn", `Interface JSON : ${error.message}`)
+  } finally {
+    jsonPolling.busy = false
+  }
+}
+
+async function startJsonPolling(config) {
+  if (jsonPolling.timer) return
+  jsonPolling.queue ??= await loadQueue(config)
+  await pollJson(config)
+  jsonPolling.timer = setInterval(() => void pollJson(config), JSON_POLL_MS)
+}
+
+function stopJsonPolling() {
+  if (jsonPolling.timer) clearInterval(jsonPolling.timer)
+  jsonPolling.timer = null
+}
+
+/** Un cycle en mode JSON : envoie les relevés en attente, puis le compte rendu */
+export async function runJsonCycle(config, state) {
+  const startedAt = new Date().toISOString()
+  const remote = await serverRequest(config, "GET", "/api/agent/v1/state", { token: state.token })
+  let rowsInserted = 0
+  let rowsRejected = 0
+  let batches = 0
+  const problems = []
+  while ((jsonPolling.queue ?? []).length > 0) {
+    const batch = jsonPolling.queue.slice(0, READINGS_PER_REQUEST)
+    const res = await serverRequest(config, "POST", "/api/agent/v1/readings", { token: state.token, json: { readings: batch } })
+    // Les relevés pris pendant l'envoi s'ajoutent en fin de file : seuls ceux envoyés sont retirés
+    jsonPolling.queue = jsonPolling.queue.slice(batch.length)
+    await saveQueue(config, jsonPolling.queue)
+    batches++
+    rowsInserted += res.inserted
+    rowsRejected += res.rejected
+    if (res.warnings?.length) problems.push(...res.warnings)
+  }
+  const reachable = Date.now() - jsonPolling.lastOkAt < JSON_STALE_MS
+  const ack = await serverRequest(config, "POST", "/api/agent/v1/heartbeat", {
+    token: state.token,
+    json: {
+      boilerReachable: reachable,
+      error: reachable ? undefined : (jsonPolling.lastError ?? "aucun relevé récent de l'interface JSON"),
+      message: problems.length ? problems.join("\n") : undefined,
+      boilerUrl: config.boilerUrl,
+      hostname: agentName(),
+      version: AGENT_VERSION,
+      filesSent: batches,
+      rowsInserted,
+      rowsRejected,
+      startedAt,
+      source: "json",
+    },
+  })
+  log("info", `Cycle terminé (interface JSON) : ${rowsInserted} nouvelle(s) mesure(s)${reachable ? "" : " — chaudière injoignable"}`)
+  announceUpdate(ack?.latestVersion)
+  return { intervalMinutes: remote.intervalMinutes, boilerReachable: reachable }
 }
 
 /** Comparaison de versions X.Y.Z : négatif si a < b */
@@ -428,7 +646,13 @@ async function main(argv) {
     return
   }
 
-  log("info", `Connecteur Granulink ${AGENT_VERSION} — chaudière ${config.boilerUrl}, serveur ${config.server}`)
+  log(
+    "info",
+    `Connecteur Granulink ${AGENT_VERSION} — chaudière ${config.boilerUrl}, serveur ${config.server}` +
+      (config.source === "csv" ? ", journaux CSV" : config.jsonPassword ? `, interface JSON ${maskedJsonUrl(config.boilerUrl, config.jsonPort)}` : "")
+  )
+  // Journaux CSV (firmware V2/V3) ou interface JSON (V4) ; en mode auto, bascule si les journaux manquent
+  let mode = config.source === "json" ? "json" : "csv"
 
   let state = await loadState(config)
   if (state && state.server !== config.server) {
@@ -451,6 +675,7 @@ async function main(argv) {
   for (;;) {
     // Pas de jeton : appairage si un nouveau code est fourni, sinon veille
     if (!state?.token) {
+      stopJsonPolling()
       if (shouldPair(config.pairingCode, state?.dormant)) {
         state = await pairOrSleep(config, once)
         continue
@@ -473,6 +698,7 @@ async function main(argv) {
     const pairedUrl = boilerMismatch(state, config.boilerUrl)
     if (pairedUrl) {
       const message = mismatchAdvice(pairedUrl, config.boilerUrl)
+      stopJsonPolling()
       if (once) throw new Error(message)
       log("error", message)
       await sleep(DORMANT_REMINDER_HOURS * 3_600_000)
@@ -481,7 +707,18 @@ async function main(argv) {
 
     let intervalMinutes = config.intervalOverride ?? DEFAULT_INTERVAL_MINUTES
     try {
-      const result = await runCycle(config, state)
+      let result
+      if (mode === "json") {
+        await startJsonPolling(config)
+        result = await runJsonCycle(config, state)
+      } else {
+        result = await runCycle(config, state)
+        if (result.switchToJson) {
+          mode = "json"
+          await startJsonPolling(config)
+          result = await runJsonCycle(config, state)
+        }
+      }
       intervalMinutes = config.intervalOverride ?? result.intervalMinutes ?? intervalMinutes
       failures = 0
     } catch (error) {
@@ -499,7 +736,10 @@ async function main(argv) {
       // Nouvel essai de plus en plus espacé quand Granulink est injoignable
       intervalMinutes = Math.min(MAX_BACKOFF_MINUTES, intervalMinutes * 2 ** Math.min(failures - 1, 4))
     }
-    if (once) return
+    if (once) {
+      stopJsonPolling()
+      return
+    }
     await sleep(intervalMinutes * 60_000)
   }
 }
