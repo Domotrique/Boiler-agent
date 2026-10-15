@@ -1,0 +1,67 @@
+# Publie l'image Docker du connecteur Granulink sur GitHub Container Registry
+# (ghcr.io/<propriétaire>/granulink-agent), pour PC/NAS (amd64) et Raspberry Pi (arm64, armv7).
+#
+# Déclenchement : pousser une étiquette vX.Y.Z (git tag v1.3.0 && git push origin v1.3.0) ou publier une release
+# avec cette étiquette, ou lancer le workflow à la main depuis l'onglet Actions.
+# Ce dépôt ne contient que le connecteur : l'image n'embarque que granulink-agent.mjs (.dockerignore).
+name: Image du connecteur
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Tests
+        run: npm ci && npm test
+
+      - name: Version du connecteur identique à l'étiquette
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version=$(grep -oP 'AGENT_VERSION = "\K[^"]+' granulink-agent.mjs)
+          test "v$version" = "$GITHUB_REF_NAME" || { echo "AGENT_VERSION=$version, étiquette $GITHUB_REF_NAME"; exit 1; }
+
+      - name: Nom de l'image (en minuscules)
+        id: image
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/granulink-agent" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Étiquettes
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.image.outputs.name }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=sha,enable=${{ github.event_name == 'workflow_dispatch' }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64,linux/arm/v7
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}

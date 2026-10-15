@@ -1,5 +1,4 @@
-import { readFileSync } from "node:fs"
-import path from "node:path"
+import { existsSync, readFileSync } from "node:fs"
 
 import { describe, expect, it } from "vitest"
 
@@ -144,7 +143,9 @@ describe("connecteur : une chaudière par jeton", () => {
 })
 
 describe("connecteur : interface JSON (firmware V4)", () => {
-  const v3 = JSON.parse(readFileSync(path.resolve("agent/fixtures/oekofen-v3-all.json"), "utf8"))
+  // Tests lancés depuis le dépôt du connecteur ou depuis Granulink (dossier agent/)
+  const fixture = ["fixtures/oekofen-v3-all.json", "agent/fixtures/oekofen-v3-all.json"].find((f) => existsSync(f))
+  const v3 = JSON.parse(readFileSync(fixture, "utf8"))
 
   it("adresse : même hôte que la chaudière, port et mot de passe de l'interface", () => {
     expect(jsonUrl("http://192.168.1.20", 4321, "aB3x")).toBe("http://192.168.1.20:4321/aB3x/all")
