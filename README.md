@@ -96,13 +96,13 @@ GRANULINK_SERVER=https://app.granulink.fr BOILER_URL=http://192.168.1.20 node gr
 
 ## Publier l'image (exploitant de Granulink)
 
-Le connecteur a son propre dépôt, public, qui ne contient que ce dossier : `Domotrique/granulink-agent`. Il est
+Le connecteur a son propre dépôt, public, qui ne contient que ce dossier : `Domotrique/Boiler-agent`. Il est
 développé dans le dossier `agent/` de Granulink (dont le serveur le distribue aussi en téléchargement), puis
 recopié dans ce dépôt avec son historique :
 
 ```sh
 # Depuis le dépôt Granulink, une fois : déclarer le dépôt du connecteur
-git remote add connecteur https://github.com/Domotrique/granulink-agent.git
+git remote add connecteur https://github.com/Domotrique/Boiler-agent.git
 # À chaque publication : pousser l'historique du dossier agent/ sur la branche main du connecteur
 git subtree push --prefix=agent connecteur main
 ```
@@ -111,16 +111,17 @@ L'image est construite par le workflow `.github/workflows/image.yml` **du dépô
 les tests et vérifie que `AGENT_VERSION` correspond à l'étiquette. Pour publier la version 1.3.0 :
 
 ```sh
-git clone https://github.com/Domotrique/granulink-agent.git && cd granulink-agent
+git clone https://github.com/Domotrique/Boiler-agent.git && cd Boiler-agent
 git tag v1.3.0
 git push origin v1.3.0
 ```
 
 (ou une release GitHub avec l'étiquette `v1.3.0` : ses archives ne contiennent que le connecteur). L'image
-`ghcr.io/domotrique/granulink-agent` reçoit les étiquettes `1.3.0`, `1` et `latest`. Elle doit être **publique**
+`ghcr.io/domotrique/granulink-agent` reçoit les étiquettes `1.3.0`, `1` et `latest` (elle garde son nom,
+différent de celui du dépôt : les commandes déjà données aux clients restent valables). Elle doit être **publique**
 (Package settings → Change visibility) pour que les clients la téléchargent sans compte GitHub, et le dépôt du
 connecteur doit avoir le droit d'y écrire (Package settings → Manage Actions access → ajouter
-`granulink-agent`, rôle *Write*). Pour utiliser un autre registre, renseigner `NEXT_PUBLIC_AGENT_IMAGE` dans la
+`Boiler-agent`, rôle *Write*). Pour utiliser un autre registre, renseigner `NEXT_PUBLIC_AGENT_IMAGE` dans la
 configuration de Granulink.
 
 Développement dans ce dossier seul : `npm ci`, puis `npm test`.
