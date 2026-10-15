@@ -288,6 +288,79 @@ export function readingFromJson(data, at = new Date(), memory = {}) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Données détaillées de la régulation : compteurs, cendrier, entretien, réglages. Une partie n'est publiée
+// qu'avec un fichier json.properties sur une clé USB laissée dans la Pelletronic Touch (une centaine de valeurs
+// en plus, clés « L_ » en lecture seule). Facteur : celui des métadonnées (/all?), sinon celui relevé sur une
+// Touch V4.02b (/all ne donne que la valeur brute).
+// ---------------------------------------------------------------------------
+
+const MS_TO_MIN = 1 / 60_000
+/** [nom envoyé à Granulink, section, clé de la régulation, facteur par défaut, type] */
+const DETAIL_FIELDS = [
+  ["boilerPowerKw", "pe1", "L_cfg_power", 1],
+  ["burnerStarts", "pe1", "L_starts", 1],
+  ["burnerHours", "pe1", "L_runtime", 1],
+  ["avgRuntimeMin", "pe1", "L_avg_runtime", 1],
+  ["screwOn", "pe1", "L_runtimeburner", 1],
+  ["screwPause", "pe1", "L_resttimeburner", 1],
+  ["flueGasC", "pe1", "L_ext_temp", 0.1],
+  ["storageFillKg", "pe1", "L_storage_fill", 1],
+  ["storageMinKg", "pe1", "L_storage_min", 1],
+  ["storageMaxKg", "pe1", "L_storage_max", 1],
+  ["hopperKg", "pe1", ["L_storage_popper", "L_storage_hopper"], 1],
+  ["ashMeasurement", "pe1", "L_cfg_ash_measurement", 1, "bool"],
+  ["ashKg", "pe1", "L_ash_amount", 0.1],
+  ["ashLimitKg", "pe1", "L_cfg_ash_limit", 0.1],
+  ["ashWarnLeftH", "pe1", "L_ash_warn_left", 1],
+  ["ashWarnIntervalH", "pe1", "L_ash_warn_interval", 1],
+  ["maintLeftHours", "pe1", "L_maint_left_hours", 1],
+  ["maintLeftDays", "pe1", "L_maint_left_days", 1],
+  ["boilerHeatingLimitC", "pe1", "L_cfg_heating_limit", 0.1],
+  ["burnerOnHystK", "pe1", "L_cfg_on_hyst", 0.1],
+  ["burnerOffHystK", "pe1", "L_cfg_off_hyst", 0.1],
+  ["minRuntimeMin", "pe1", "L_cfg_min_runtime", MS_TO_MIN],
+  ["minStandstillMin", "pe1", "L_cfg_min_standstill", MS_TO_MIN],
+  ["curveSlope", "hk1", "L_cfg_curve_slope", 0.1],
+  ["curveBasepointC", "hk1", "L_cfg_curve_basepoint", 0.1],
+  ["heatLimitC", "hk1", "L_cfg_limit_heat", 0.1],
+  ["setbackLimitC", "hk1", "L_cfg_limit_setback", 0.1],
+  ["flowMinC", "hk1", "L_cfg_flow_min", 0.1],
+  ["flowMaxC", "hk1", "L_cfg_flow_max", 0.1],
+  ["ambientAvgC", "system", "L_ambient_avg", 0.1],
+  ["usbStick", "system", "L_usb_stick", 1, "bool"],
+]
+
+const roundDetail = (n) => Math.round(n * 100) / 100
+
+/**
+ * Valeurs détaillées publiées par la régulation, converties (kg, °C, h, min). Seules les valeurs présentes sont
+ * renvoyées ; null si aucune ne l'est. `screwRatioPct` : part du temps de vis dans le cycle vis + pause en cours.
+ */
+export function boilerDetails(data) {
+  const details = {}
+  for (const [name, section, keys, defaultFactor, type] of DETAIL_FIELDS) {
+    const field = [keys].flat().map((k) => data?.[section]?.[k]).find((v) => v !== undefined)
+    if (field === undefined) continue
+    if (type === "bool") {
+      const b = jsonBool(field)
+      if (b !== null) details[name] = b
+      continue
+    }
+    const n = jsonNumber(field)
+    if (n === null) continue
+    const factor = field !== null && typeof field === "object" && Number.isFinite(Number(field.factor)) ? Number(field.factor) : defaultFactor
+    details[name] = roundDetail(n * factor)
+  }
+  if (details.screwOn !== undefined && details.screwPause !== undefined) {
+    const cycle = details.screwOn + details.screwPause
+    details.screwRatioPct = cycle > 0 ? roundDetail((100 * details.screwOn) / cycle) : 0
+  }
+  delete details.screwOn
+  delete details.screwPause
+  return Object.keys(details).length > 0 ? details : null
+}
+
 /** Ajoute des relevés à la file d'attente, sans dépasser sa capacité (les plus anciens sont abandonnés) */
 export function enqueue(queue, readings, max = MAX_QUEUED_READINGS) {
   const next = [...queue, ...readings]
@@ -520,6 +593,16 @@ export async function runCycle(config, state) {
     }
   }
 
+  // Firmware V3 avec l'interface JSON activée : données détaillées en plus des journaux
+  let details
+  if (config.jsonPassword) {
+    try {
+      details = boilerDetails(await boilerJson(config)) ?? undefined
+    } catch (error) {
+      log("debug", `Interface JSON : ${error.message}`)
+    }
+  }
+
   const ack = await serverRequest(config, "POST", "/api/agent/v1/heartbeat", {
     token: state.token,
     json: {
@@ -533,6 +616,7 @@ export async function runCycle(config, state) {
       rowsRejected,
       startedAt,
       source: "csv",
+      details,
     },
   })
   log(
@@ -547,7 +631,7 @@ export async function runCycle(config, state) {
 // Interface JSON (firmware V4) : relevé minute par minute, file d'attente sur disque, envoi à chaque cycle
 // ---------------------------------------------------------------------------
 
-const jsonPolling = { queue: null, timer: null, lastOkAt: 0, lastError: null, busy: false, stateMemory: {} }
+const jsonPolling = { queue: null, timer: null, lastOkAt: 0, lastError: null, busy: false, stateMemory: {}, details: null }
 
 function queueFile(config) {
   return path.join(config.dataDir, "readings-queue.json")
@@ -574,7 +658,9 @@ async function pollJson(config) {
   if (jsonPolling.busy) return
   jsonPolling.busy = true
   try {
-    const reading = readingFromJson(await boilerJson(config), new Date(), jsonPolling.stateMemory)
+    const data = await boilerJson(config)
+    const reading = readingFromJson(data, new Date(), jsonPolling.stateMemory)
+    jsonPolling.details = boilerDetails(data)
     jsonPolling.queue = enqueue(jsonPolling.queue ?? [], [reading])
     jsonPolling.lastOkAt = Date.now()
     jsonPolling.lastError = null
@@ -634,6 +720,7 @@ export async function runJsonCycle(config, state) {
       rowsRejected,
       startedAt,
       source: "json",
+      details: reachable ? (jsonPolling.details ?? undefined) : undefined,
     },
   })
   log("info", `Cycle terminé (interface JSON) : ${rowsInserted} nouvelle(s) mesure(s)${reachable ? "" : " — chaudière injoignable"}`)

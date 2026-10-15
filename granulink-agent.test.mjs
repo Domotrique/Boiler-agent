@@ -22,6 +22,7 @@ import {
   boilerState,
   parseBoilerJson,
   decodeBoilerText,
+  boilerDetails,
 } from "./granulink-agent.mjs"
 
 describe("connecteur : normalizeUrl", () => {
@@ -256,6 +257,62 @@ describe("connecteur : interface JSON (firmware V4)", () => {
     expect(() => readingFromJson({ system: {} })).toThrow(/pe1/)
     expect(() => readingFromJson(null)).toThrow()
     expect(() => readingFromJson({ system: {}, wp1: { L_state: "0" } })).toThrow(/pompe à chaleur/)
+  })
+
+  it("données détaillées (json.properties, Touch V4.02b) : facteurs des métadonnées", () => {
+    const m = (val, factor, unit) => ({ val, factor, ...(unit ? { unit } : {}), min: -32768, max: 32767 })
+    const data = {
+      system: { L_usb_stick: { val: 1, format: "0:Aus|1:Ein" }, L_ambient_avg: m(139, 0.1, "°C") },
+      hk1: { L_cfg_curve_slope: m(10, 0.1), L_cfg_curve_basepoint: m(310, 0.1, "°C"), L_cfg_limit_heat: m(180, 0.1, "°C") },
+      pe1: {
+        L_cfg_power: { val: 16, factor: 1, min: 8, max: 56 },
+        L_starts: { val: 9625, factor: 1 },
+        L_runtime: { val: 9681, unit: "h", factor: 1 },
+        L_runtimeburner: { val: 2783, unit: "zs", factor: 0.01 },
+        L_resttimeburner: { val: 8000, unit: "zs", factor: 0.01 },
+        L_ext_temp: m(-32768, 0.1, "°C"),
+        L_storage_fill: { val: 4511, unit: "kg", factor: 1 },
+        L_storage_popper: m(32, 1, "kg"),
+        L_ash_amount: m(24, 0.1, "kg"),
+        L_cfg_ash_limit: { val: 60, unit: "kg", factor: 0.1, min: 0, max: 200 },
+        L_cfg_ash_measurement: { val: 1, format: "0:Aus|1:Ein" },
+        L_maint_left_hours: { val: 1000, unit: "h", factor: 1 },
+        L_maint_left_days: { val: 364, unit: "d", factor: 1 },
+        L_cfg_on_hyst: { val: 100, unit: "K", factor: 0.1 },
+        L_cfg_min_runtime: { val: 600000, unit: "min", factor: 1.6666666666666667e-5 },
+      },
+    }
+    expect(boilerDetails(data)).toEqual({
+      boilerPowerKw: 16,
+      burnerStarts: 9625,
+      burnerHours: 9681,
+      screwRatioPct: 25.81,
+      storageFillKg: 4511,
+      hopperKg: 32,
+      ashMeasurement: true,
+      ashKg: 2.4,
+      ashLimitKg: 6,
+      maintLeftHours: 1000,
+      maintLeftDays: 364,
+      burnerOnHystK: 10,
+      minRuntimeMin: 10,
+      curveSlope: 1,
+      curveBasepointC: 31,
+      heatLimitC: 18,
+      ambientAvgC: 13.9,
+      usbStick: true,
+    })
+  })
+
+  it("données détaillées sans métadonnées (/all) : facteurs par défaut ; rien de connu : null", () => {
+    const d = boilerDetails({
+      pe1: { L_ash_amount: "24", L_cfg_min_runtime: "600000", L_runtimeburner: "0", L_resttimeburner: "0", L_storage_fill: "0" },
+      hk1: { L_cfg_curve_slope: "12" },
+      system: { L_usb_stick: "false" },
+    })
+    expect(d).toEqual({ ashKg: 2.4, minRuntimeMin: 10, screwRatioPct: 0, storageFillKg: 0, curveSlope: 1.2, usbStick: false })
+    expect(boilerDetails({ pe1: { L_temp_act: "200" } })).toBeNull()
+    expect(boilerDetails(null)).toBeNull()
   })
 
   it("file d'attente bornée : les plus anciens relevés sont abandonnés", () => {

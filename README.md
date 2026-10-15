@@ -176,6 +176,12 @@ l'interface JSON répond, il passe au **relevé minute par minute** (`BOILER_SOU
 - la consommation est recalée par Granulink sur le compteur de granulés de la chaudière
   (`pe1.storage_fill_today`) quand il est alimenté, sinon estimée d'après la modulation et la puissance.
 
+À chaque compte rendu, le connecteur envoie aussi les **données de la régulation** : compteurs du brûleur, stock
+estimé par la chaudière, part du temps de vis. Avec un fichier `json.properties` sur une clé USB laissée dans la
+Touch (une centaine de valeurs en plus, clés `L_` en lecture seule, testé sur V4.02b) s'ajoutent la courbe de
+chauffe, les limites de chauffe, les hystérésis, le cendrier et l'entretien. Elles s'affichent sur la page de la
+chaudière. En firmware V3, elles sont lues une fois par cycle si `BOILER_JSON_PASSWORD` est renseigné.
+
 Si la régulation (firmware V3.10c/d) est réglée en allemand, les umlauts rendent la réponse invalide : passer
 l'écran en anglais.
 
@@ -189,6 +195,8 @@ La chaudière virtuelle répond sur `http://localhost:8181` du poste (interface 
   si Granulink tourne aussi sur le poste).
 - Firmware V4 : `/_sim?firmware=4` sur la chaudière virtuelle, puis `BOILER_JSON_PASSWORD=1234` ;
   `/_sim?compteurs=non` simule une chaudière sans compteur de granulés (consommation estimée).
+- Données de la régulation : `/_sim?usb=oui` simule la clé USB `json.properties` ; `/_sim?reglage=mal_regle`
+  change la courbe, la limite de chauffe et l'hystérésis, visibles au compte rendu suivant.
 
 ## Suppression de la chaudière et désinstallation
 
