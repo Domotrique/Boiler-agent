@@ -182,38 +182,95 @@ export function maskedJsonUrl(boilerUrl, port) {
   return jsonUrl(boilerUrl, port, "***").replace("%2A%2A%2A", "***")
 }
 
-// Valeurs de l'interface JSON : chaînes, températures en dixièmes, -32768 pour une sonde absente
-const SENSOR_MISSING = -32768
+// Valeurs de l'interface JSON. Deux formes selon le firmware : valeur nue (« 537 », 537) ou, sur les firmwares
+// récents, objet avec métadonnées ({"val": 537, "factor": 0.1, "unit": "°C"…}). La valeur brute a la même unité
+// dans les deux cas (températures en dixièmes de degré) : seule `val` est lue.
+// Valeurs « indisponible » de la régulation (bornes d'un entier 16 bits) : sonde absente, compteur non alimenté
+const isUnavailable = (n) => (n >= 32765 && n <= 32767) || (n >= -32768 && n <= -32766)
+const rawValue = (value) => (value !== null && typeof value === "object" ? value.val : value)
 function jsonNumber(value) {
-  if (value === undefined || value === null || value === "") return null
-  const n = Number(value)
-  return Number.isFinite(n) && n !== SENSOR_MISSING ? n : null
+  const v = rawValue(value)
+  if (v === undefined || v === null || v === "" || typeof v === "boolean") return null
+  const n = Number(v)
+  return Number.isFinite(n) && !isUnavailable(n) ? n : null
 }
 const tenths = (value) => {
   const n = jsonNumber(value)
   return n === null ? null : Math.round(n) / 10
 }
 function jsonBool(value) {
-  if (value === true || value === "true") return true
-  if (value === false || value === "false") return false
+  const v = rawValue(value)
+  if (v === true || v === "true" || v === 1 || v === "1") return true
+  if (v === false || v === "false" || v === 0 || v === "0") return false
   return null
+}
+
+/** Codes d'état de la chaudière (colonne PE1 Status des journaux CSV) */
+const STATE_STANDBY = 99
+const MAX_STATE_CODE = 13
+/**
+ * État de la chaudière d'après pe1.L_state. Selon le firmware, c'est soit le code de la colonne PE1 Status
+ * (4 = combustion, 99 = veille), soit un champ de bits : bit n levé pour l'état n (16 = combustion, 32 = fin de
+ * combustion), bit 31 pour l'arrêt, bit 28 pour une information (« température chaudière supérieure à la
+ * température de redémarrage »). Une valeur hors des codes connus révèle le champ de bits : `memory.bitfield`
+ * le retient pour les relevés suivants (sinon, 4 ou 8 seraient ambigus). pe1.L_state_enum, quand il est publié,
+ * donne directement le code.
+ */
+export function boilerState(pe, memory = {}) {
+  const code = jsonNumber(pe.L_state_enum)
+  if (code !== null) return Math.round(code)
+  const v = rawValue(pe.L_state)
+  const n = v === undefined || v === null || v === "" ? NaN : Number(v)
+  if (!Number.isInteger(n) || n < 0) return null
+  if (!memory.bitfield && (n <= MAX_STATE_CODE || (n >= 97 && n <= 101))) return n
+  memory.bitfield = true
+  for (let bit = 0; bit <= MAX_STATE_CODE; bit++) {
+    if (Math.floor(n / 2 ** bit) % 2 === 1) return bit
+  }
+  return STATE_STANDBY
+}
+
+/** Le texte brut de /all en JSON, malgré les défauts connus des firmwares */
+export function parseBoilerJson(text) {
+  return JSON.parse(
+    text
+      // Firmware 4.02 : guillemet fermant manquant après L_statetext
+      .replace(/"L_statetext:/g, '"L_statetext":')
+      // Caractères de contrôle non échappés dans les textes (retours à la ligne, tabulations)
+      .replace(/[\u0000-\u001f]/g, " ")
+  )
+}
+
+/** Texte de la réponse : UTF-8 sur les firmwares récents, Windows-1252 sur les anciens */
+export function decodeBoilerText(bytes) {
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes)
+  } catch {
+    return new TextDecoder("windows-1252").decode(bytes)
+  }
 }
 
 /**
  * Relevé d'une minute à partir de la réponse de /all (firmware V3 ou V4), au format attendu par Granulink.
- * Les compteurs de granulés (storage_fill_today/yesterday) ne sont alimentés que sur les chaudières récentes.
+ * Les compteurs de granulés (storage_fill_today/yesterday, ou L_pellets_today/yesterday selon le firmware) ne
+ * sont alimentés que sur les chaudières récentes. `memory` garde d'un relevé à l'autre la forme de l'état.
  */
-export function readingFromJson(data, at = new Date()) {
+export function readingFromJson(data, at = new Date(), memory = {}) {
   const system = data?.system ?? {}
   const pe = data?.pe1 ?? {}
   const hk = data?.hk1 ?? {}
   if (!data || typeof data !== "object" || Object.keys(pe).length === 0) {
-    throw new Error("réponse de l'interface JSON sans section pe1 : est-ce bien une chaudière Ökofen ?")
+    // Régulation Ökofen sans chaudière à granulés (pompe à chaleur, solaire seul) : rien à suivre
+    throw new Error(
+      data?.wp1
+        ? "l'interface JSON décrit une pompe à chaleur Ökofen, sans chaudière à granulés (pe1) : non prise en charge"
+        : "réponse de l'interface JSON sans section pe1 : est-ce bien une chaudière Ökofen ?"
+    )
   }
-  const status = jsonNumber(pe.L_state)
+  // pe1.L_ext_temp est la température des fumées, pas la température extérieure
   return {
     at: new Date(at).toISOString(),
-    outdoorTempC: tenths(system.L_ambient) ?? tenths(pe.L_ext_temp),
+    outdoorTempC: tenths(system.L_ambient),
     boilerTempC: tenths(pe.L_temp_act),
     boilerTempSetC: tenths(pe.L_temp_set),
     flowTempC: tenths(hk.L_flowtemp_act),
@@ -222,10 +279,12 @@ export function readingFromJson(data, at = new Date()) {
     roomTempSetC: tenths(hk.L_roomtemp_set),
     flameTempC: tenths(pe.L_frt_temp_act),
     modulationPct: jsonNumber(pe.L_modulation),
-    boilerStatus: status === null ? null : Math.round(status),
+    boilerStatus: boilerState(pe, memory),
     heatingPumpOn: jsonBool(hk.L_pump),
-    pelletCounterTodayKg: jsonNumber(pe.storage_fill_today ?? pe.L_storage_fill_today),
-    pelletCounterYesterdayKg: jsonNumber(pe.storage_fill_yesterday ?? pe.L_storage_fill_yesterday),
+    pelletCounterTodayKg: jsonNumber(pe.storage_fill_today ?? pe.L_pellets_today ?? pe.L_storage_fill_today),
+    pelletCounterYesterdayKg: jsonNumber(
+      pe.storage_fill_yesterday ?? pe.L_pellets_yesterday ?? pe.L_storage_fill_yesterday
+    ),
   }
 }
 
@@ -343,9 +402,9 @@ async function boilerJson(config) {
   }
   if (res.status === 401 || res.status === 403) throw new Error(`${shown} : mot de passe JSON refusé (BOILER_JSON_PASSWORD)`)
   if (!res.ok) throw new Error(`${shown} : la chaudière a répondu ${res.status}`)
-  const text = new TextDecoder("windows-1252").decode(await res.arrayBuffer())
+  const text = decodeBoilerText(new Uint8Array(await res.arrayBuffer()))
   try {
-    return JSON.parse(text)
+    return parseBoilerJson(text)
   } catch {
     // Firmware V3.10c/d en allemand : les umlauts cassent le JSON (régler l'écran en anglais)
     throw new Error(`${shown} : réponse illisible (JSON invalide) ; si la régulation est en allemand, passez-la en anglais`)
@@ -488,7 +547,7 @@ export async function runCycle(config, state) {
 // Interface JSON (firmware V4) : relevé minute par minute, file d'attente sur disque, envoi à chaque cycle
 // ---------------------------------------------------------------------------
 
-const jsonPolling = { queue: null, timer: null, lastOkAt: 0, lastError: null, busy: false }
+const jsonPolling = { queue: null, timer: null, lastOkAt: 0, lastError: null, busy: false, stateMemory: {} }
 
 function queueFile(config) {
   return path.join(config.dataDir, "readings-queue.json")
@@ -515,7 +574,7 @@ async function pollJson(config) {
   if (jsonPolling.busy) return
   jsonPolling.busy = true
   try {
-    const reading = readingFromJson(await boilerJson(config))
+    const reading = readingFromJson(await boilerJson(config), new Date(), jsonPolling.stateMemory)
     jsonPolling.queue = enqueue(jsonPolling.queue ?? [], [reading])
     jsonPolling.lastOkAt = Date.now()
     jsonPolling.lastError = null

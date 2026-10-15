@@ -19,6 +19,9 @@ import {
   jsonUrl,
   maskedJsonUrl,
   readingFromJson,
+  boilerState,
+  parseBoilerJson,
+  decodeBoilerText,
 } from "./granulink-agent.mjs"
 
 describe("connecteur : normalizeUrl", () => {
@@ -168,15 +171,91 @@ describe("connecteur : interface JSON (firmware V4)", () => {
     })
   })
 
-  it("sonde extérieure de la chaudière en secours, -32768 ignoré", () => {
-    const data = { ...v3, system: {}, pe1: { ...v3.pe1, L_ext_temp: "-52" } }
-    expect(readingFromJson(data).outdoorTempC).toBe(-5.2)
-    expect(readingFromJson({ ...v3, system: {} }).outdoorTempC).toBeNull()
+  it("température des fumées (pe1.L_ext_temp) jamais prise pour la température extérieure", () => {
+    const data = { ...v3, system: {}, pe1: { ...v3.pe1, L_ext_temp: "1520" } }
+    expect(readingFromJson(data).outdoorTempC).toBeNull()
+  })
+
+  // Forme des firmwares récents (/all? sur V4.02b et V4.04b) : valeurs avec métadonnées, état en champ de bits,
+  // compteurs renommés ou non alimentés (32765)
+  const meta = (val, extra = {}) => ({ val, factor: 0.1, unit: "°C", min: -32768, max: 32767, ...extra })
+  const v4 = (pe1) => ({
+    system: { system_info: "system global variables", L_ambient: meta(238), L_usb_stick: { val: 0, format: "0:Arrêt|1:Marche" } },
+    hk1: { L_flowtemp_act: meta(269), L_flowtemp_set: meta(280), L_roomtemp_act: meta(0), L_roomtemp_set: meta(80), L_pump: { val: 1, format: "0:Arrêt|1:Marche" } },
+    pe1: {
+      pe_info: "pellematic data",
+      L_temp_act: meta(612),
+      L_temp_set: meta(680),
+      L_ext_temp: meta(-32768),
+      L_frt_temp_act: meta(5480),
+      L_modulation: { val: 72, unit: "%", factor: 1, min: -32768, max: 32767 },
+      L_state: { val: 16, factor: 1 },
+      L_statetext: "Combustion",
+      ...pe1,
+    },
+    error: {},
+  })
+
+  it("firmware récent : métadonnées, état en champ de bits, compteurs L_pellets_*", () => {
+    const r = readingFromJson(v4({ L_pellets_today: { val: 6, unit: "kg", factor: 1 }, L_pellets_yesterday: { val: 8, unit: "kg", factor: 1 } }))
+    expect(r).toMatchObject({
+      outdoorTempC: 23.8,
+      boilerTempC: 61.2,
+      boilerTempSetC: 68,
+      flowTempC: 26.9,
+      roomTempC: 0,
+      flameTempC: 548,
+      modulationPct: 72,
+      boilerStatus: 4,
+      heatingPumpOn: true,
+      pelletCounterTodayKg: 6,
+      pelletCounterYesterdayKg: 8,
+    })
+  })
+
+  it("compteurs non alimentés (32765) et sondes absentes : null", () => {
+    const r = readingFromJson(v4({ L_pellets_today: { val: 32765 }, L_pellets_yesterday: { val: "32765" } }))
+    expect(r.pelletCounterTodayKg).toBeNull()
+    expect(r.pelletCounterYesterdayKg).toBeNull()
+    expect(readingFromJson(v4({ L_temp_act: meta(32767) })).boilerTempC).toBeNull()
+  })
+
+  it("état : code ou champ de bits, mémorisé d'un relevé à l'autre", () => {
+    expect(boilerState({ L_state: "99" })).toBe(99)
+    expect(boilerState({ L_state: "4" })).toBe(4)
+    expect(boilerState({ L_state: 16 })).toBe(4)
+    expect(boilerState({ L_state: 32 })).toBe(5)
+    // Combustion + « température chaudière supérieure à la température de redémarrage » (bit 28)
+    expect(boilerState({ L_state: 268435472 })).toBe(4)
+    // Arrêt (bit 31), avec ou sans le bit 28
+    expect(boilerState({ L_state: { val: 2147483648 } })).toBe(99)
+    expect(boilerState({ L_state: 2415919104 })).toBe(99)
+    // Une fois le champ de bits reconnu, 4 est l'allumage (bit 2), pas la combustion
+    const memory = {}
+    expect(boilerState({ L_state: 2147483648 }, memory)).toBe(99)
+    expect(boilerState({ L_state: 4 }, memory)).toBe(2)
+    expect(boilerState({ L_state: 16 }, memory)).toBe(4)
+    // Le code publié par json.properties l'emporte
+    expect(boilerState({ L_state: 2147483648, L_state_enum: { val: 99, format: "0:Dauerlauf|…" } })).toBe(99)
+    expect(boilerState({})).toBeNull()
+  })
+
+  it("JSON abîmé par le firmware : guillemet manquant, caractères de contrôle", () => {
+    const text = '{"pe1":{"L_state":"99","L_statetext:"Arrêt\tlong\ntexte","L_temp_act":"200"}}'
+    const data = parseBoilerJson(text)
+    expect(data.pe1.L_statetext).toBe("Arrêt long texte")
+    expect(readingFromJson(data).boilerTempC).toBe(20)
+  })
+
+  it("jeu de caractères : UTF-8 si valide, sinon Windows-1252", () => {
+    expect(decodeBoilerText(new TextEncoder().encode('"Arrêt"'))).toBe('"Arrêt"')
+    expect(decodeBoilerText(Uint8Array.from([0x22, 0x41, 0x72, 0x72, 0xea, 0x74, 0x22]))).toBe('"Arrêt"')
   })
 
   it("réponse sans chaudière : erreur explicite", () => {
     expect(() => readingFromJson({ system: {} })).toThrow(/pe1/)
     expect(() => readingFromJson(null)).toThrow()
+    expect(() => readingFromJson({ system: {}, wp1: { L_state: "0" } })).toThrow(/pompe à chaleur/)
   })
 
   it("file d'attente bornée : les plus anciens relevés sont abandonnés", () => {

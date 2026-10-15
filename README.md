@@ -166,7 +166,12 @@ l'interface JSON répond, il passe au **relevé minute par minute** (`BOILER_SOU
 
 - un relevé par minute, conservé dans une file d'attente (`readings-queue.json` du dossier `DATA_DIR`, une semaine
   au plus) et envoyé à chaque cycle : une coupure de Granulink ne perd rien ;
-- texte décodé en Windows-1252, températures en dixièmes, `-32768` (sonde absente) ignoré ;
+- les deux formes de réponse sont lues : valeurs nues (anciens firmwares) ou avec métadonnées (`{"val": 537,
+  "factor": 0.1}`) ; texte en UTF-8, sinon Windows-1252 ; défauts connus du JSON corrigés (guillemet manquant après
+  `L_statetext`, caractères de contrôle) ; valeurs « indisponible » (`-32768`…`-32766`, `32765`…`32767`) ignorées ;
+- état de la chaudière (`pe1.L_state`) en code (4 = combustion, 99 = veille) ou en champ de bits selon le firmware
+  (16 = combustion, 2147483648 = arrêt) ;
+- compteurs de granulés : `storage_fill_today`/`yesterday` ou `L_pellets_today`/`yesterday` selon le firmware ;
 - pas d'historique sur la chaudière : les données commencent au démarrage du connecteur ;
 - la consommation est recalée par Granulink sur le compteur de granulés de la chaudière
   (`pe1.storage_fill_today`) quand il est alimenté, sinon estimée d'après la modulation et la puissance.
