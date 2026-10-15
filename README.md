@@ -118,9 +118,10 @@ git push origin v1.3.0
 
 (ou une release GitHub avec l'étiquette `v1.3.0` : ses archives ne contiennent que le connecteur). L'image
 `ghcr.io/domotrique/granulink-agent` reçoit les étiquettes `1.3.0`, `1` et `latest` (elle garde son nom,
-différent de celui du dépôt : les commandes déjà données aux clients restent valables). Elle doit être **publique**
-(Package settings → Change visibility) pour que les clients la téléchargent sans compte GitHub, et le dépôt du
-connecteur doit avoir le droit d'y écrire (Package settings → Manage Actions access → ajouter
+différent de celui du dépôt : les commandes déjà données aux clients restent valables). À la première
+publication, le paquet est créé et rattaché au dépôt du connecteur ; il doit être **public** (Package settings →
+Change visibility) pour que les clients le téléchargent sans compte GitHub. Si le paquet existe déjà, rattaché à
+un autre dépôt, donner au dépôt du connecteur le droit d'y écrire (Package settings → Manage Actions access →
 `Boiler-agent`, rôle *Write*). Pour utiliser un autre registre, renseigner `NEXT_PUBLIC_AGENT_IMAGE` dans la
 configuration de Granulink.
 
